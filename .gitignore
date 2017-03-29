@@ -3,6 +3,8 @@
 *.ko
 *.obj
 *.elf
+proj1/server
+proj1/client
 
 # Precompiled Headers
 *.gch
