@@ -31,7 +31,7 @@ void *get_addr(struct sockaddr *sa)
 int main(int argc, char *argv[])
 {
 	int sockfd, new_fd, opt;
-	char *port = NULL;
+	char *port = NULL;	/* Input port number from command line argument */
 	struct addrinfo hints, *res, *p;
 	struct sockaddr_storage their_addr;
 	socklen_t sin_size;
@@ -41,6 +41,7 @@ int main(int argc, char *argv[])
 	int rv, child_pid;
 	int numbytes;
 
+	/* This socket can accept IPv4 and IPv6, types is TCP socket */
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC;
 	hints.ai_socktype = SOCK_STREAM;
@@ -48,7 +49,7 @@ int main(int argc, char *argv[])
 
 	while((opt = getopt(argc, argv, "p:")) != -1) {
 		switch(opt) {
-			case 'p':
+			case 'p':	/* There are only one argument, port number */
 				port = malloc(strlen(optarg) * sizeof(char));
 				strcpy(port, optarg);
 				break;
@@ -63,12 +64,15 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
+	/* Get address information */
 	if((rv = getaddrinfo(NULL, port, &hints, &res)) != 0) {
 		fprintf(stderr, "getaddrinfo - server: %s\n", gai_strerror(rv));
 		return 1;
 	}
 	
+	/* Search for valid node in res list */
 	for(p = res; p != NULL; p = p->ai_next) {
+		/* Create socket given by getaddrinfo */
 		if((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
 			perror("server: socket");
 			continue;
@@ -79,6 +83,7 @@ int main(int argc, char *argv[])
 			exit(EXIT_FAILURE);
 		}
 
+		/* Bind socket to specified port */
 		if(bind(sockfd, p->ai_addr, p->ai_addrlen) == -1) {
 			close(sockfd);
 			perror("server: bind");
@@ -96,6 +101,7 @@ int main(int argc, char *argv[])
 
 	freeaddrinfo(res);
 
+	/* Listen input for current socket */
 	if(listen(sockfd, BACKLOG) == -1) {
 		perror("listen");
 		exit(EXIT_FAILURE);
@@ -109,10 +115,10 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	printf("server: waiting for connections...\n");
-	
 	while(1) {
 		sin_size = sizeof(their_addr);
+		/* If there are connection request, accept that connection,
+		   and create new file description for that connection */
 		new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
 		if(new_fd == -1) {
 			perror("accept");
@@ -120,22 +126,27 @@ int main(int argc, char *argv[])
 		}
 
 		inet_ntop(their_addr.ss_family, get_addr((struct sockaddr *)&their_addr), s, sizeof(s));
+		/* Create child process for newly created connection */
 		child_pid = fork();
 		if(child_pid == 0) {
+			/* Socket file description is not needed for child process */
 			close(sockfd);
 			while(1) {
+				/* Read messages from client */
 				numbytes = read(new_fd, buf, BUF_SIZE);
 				if(numbytes == -1) {
 					perror("read");
 					break;
 				}
+				/* If client is terminated, break while loop */
 				else if(numbytes == 0)
 					break;
+				/* Print received message to standard output */
 				write(STDOUT_FILENO, buf, BUF_SIZE);
+				/* Claer buffer for next message */
 				bzero(buf, BUF_SIZE);
 			}
 
-			printf("client %s is disconnected\n", s);
 			close(new_fd);
 			exit(EXIT_SUCCESS);
 		}
