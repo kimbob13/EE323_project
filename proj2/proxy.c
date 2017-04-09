@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <netdb.h>
 #include <signal.h>
@@ -119,11 +120,13 @@ int main(int argc, char *argv[])
 
 		child_pid = fork();
 		if(child_pid == 0) {
-			bool is_success = false;
+			bool is_success;
 			
 			close(sockfd);
 			while(1) {
 				char *msg_token;
+
+				is_success = false;
 
 				numbytes = read(new_fd, buf, BUF_SIZE);
 				if(numbytes == -1) {
@@ -145,8 +148,9 @@ int main(int argc, char *argv[])
 					}
 				}
 
-				if(is_success)
-					/* bla bla */
+				if(is_success) {
+					continue;
+				}
 				else
 					break;
 				/* Core part end */
