@@ -117,12 +117,13 @@ int main(int argc, char *argv[])
 		child_pid = fork();
 		if(child_pid == 0) {
 			bool is_valid_request, is_success;
-			char *full_request[20];
-			int header_index = 1;
+			char *header_list[20];
+			int header_index = 0;
 			
 			close(sockfd);
 			while(1) {
 				char *msg_token, *server_addr, *http_version;
+				char *forward_request, *forward_url;
 
 				is_valid_request = false;
 				is_success = false;
@@ -133,12 +134,11 @@ int main(int argc, char *argv[])
 					break;
 				}
 				else if(numbytes == 0) {
-					printf("There is no more date in this socket\n");
 					break;
 				}
+				
 
 				/* Core part */
-				
 				msg_token = strtok(buf, " ");
 				if(strcmp(msg_token, "GET") == 0) {
 					server_addr = strtok(NULL, " ");
@@ -151,19 +151,17 @@ int main(int argc, char *argv[])
 				}
 				else if(msg_token[strlen(msg_token) - 2]  == ':') {
 					/* Header field */
-					strcpy(full_request[header_index], buf);
+					header_list[header_index] = malloc(strlen(buf) + 1);
+					strcpy(header_list[header_index], buf);
 					header_index++;
 				}
 				else if(strcmp(msg_token, "\r\n") == 0 || strcmp(msg_token, "\n") == 0) {
 					/* Empty line, next line is entity body */
-					strcpy(full_request[header_index], msg_token);
 					is_success = true;
 				}
 
 				if(is_valid_request) {
-					char *forward_request;
-					char *forward_url;
-					forward_request = malloc(strlen(buf) * sizeof(char));
+					forward_request = malloc((strlen(buf) + 1) * sizeof(char));
 
 					/* Find server path that is to be forwarded.
 					   Request message that is sent to proxy contains full host name.
@@ -180,16 +178,17 @@ int main(int argc, char *argv[])
 					strcat(forward_request, forward_url);
 					strcat(forward_request, " ");
 					strcat(forward_request, http_version);
+					strcat(forward_request, "\0");
 
 					printf("Final forwarded request: %s\n", forward_request);
-					strcpy(full_request[0], forward_request);
 				}
 				else if(is_success) {
 					/* Message from client is valid.
 					   Now we have to send this message to remote server */
 					printf("This message will be sent\n\n");
-					for(int j = 0; j < header_index; j++)
-						printf("%s\n", full_request[j]);
+					printf("%s\n", forward_request);
+					for(int i = 0; i < header_index; i++)
+						printf("%s\n", header_list[i]);
 					break;
 				}
 				bzero(buf, BUF_SIZE);
