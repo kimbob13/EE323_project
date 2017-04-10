@@ -125,6 +125,8 @@ int main(int argc, char *argv[])
 			close(sockfd);
 			while(1) {
 				char *msg_token;
+				char *server_addr;
+				char *http_version;
 
 				is_valid_request = false;
 
@@ -140,10 +142,8 @@ int main(int argc, char *argv[])
 				
 				msg_token = strtok(buf, " ");
 				if(strcmp(msg_token, "GET") == 0) {
-					char *server_addr;
 					server_addr = strtok(NULL, " ");
 					if(strncmp(server_addr, "http://", 7) == 0) {
-						char *http_version;
 						http_version = strtok(NULL, " ");
 						if(strncmp(http_version, "HTTP/1.0", 8) == 0) {
 							is_valid_request = true;
@@ -188,7 +188,8 @@ int main(int argc, char *argv[])
 				/* Core part end */
 				bzero(buf, BUF_SIZE);
 			}
-			if(!is_success)
+
+			//if(!is_success)
 				/* Some error code */
 			close(new_fd);
 		}
