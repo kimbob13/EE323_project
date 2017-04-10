@@ -116,23 +116,26 @@ int main(int argc, char *argv[])
 
 		child_pid = fork();
 		if(child_pid == 0) {
-			bool is_valid_request;
+			bool is_valid_request, is_success;
+			char *full_request[20];
+			int header_index = 1;
 			
 			close(sockfd);
 			while(1) {
-				char *msg_token;
-				char *server_addr;
-				char *http_version;
+				char *msg_token, *server_addr, *http_version;
 
 				is_valid_request = false;
+				is_success = false;
 
 				numbytes = read(new_fd, buf, BUF_SIZE);
 				if(numbytes == -1) {
 					perror("read");
 					break;
 				}
-				else if(numbytes == 0)
+				else if(numbytes == 0) {
+					printf("There is no more date in this socket\n");
 					break;
+				}
 
 				/* Core part */
 				
@@ -148,9 +151,13 @@ int main(int argc, char *argv[])
 				}
 				else if(msg_token[strlen(msg_token) - 2]  == ':') {
 					/* Header field */
+					strcpy(full_request[header_index], buf);
+					header_index++;
 				}
 				else if(strcmp(msg_token, "\r\n") == 0 || strcmp(msg_token, "\n") == 0) {
-					/* Empty line, next line is entity data */
+					/* Empty line, next line is entity body */
+					strcpy(full_request[header_index], msg_token);
+					is_success = true;
 				}
 
 				if(is_valid_request) {
@@ -162,34 +169,32 @@ int main(int argc, char *argv[])
 					   Request message that is sent to proxy contains full host name.
 					   So, when forward message to remote server,
 					   we must remove that host address and send only path address */
-					
 					forward_url = strchr(server_addr, '/');
 					for(int i = 0; i < 2; i++)
 						forward_url = strchr(forward_url + 1, '/');
 
 
-					/* Copy request method */
+					/* Make forwarding request that will be sent to remote server */
 					strcpy(forward_request, msg_token);
-					/* Append space */
 					strcat(forward_request, " ");
-					/* Append request URL */
 					strcat(forward_request, forward_url);
-					/* Append space */
 					strcat(forward_request, " ");
-					/* Append HTTP version */
 					strcat(forward_request, http_version);
+
 					printf("Final forwarded request: %s\n", forward_request);
-
-					continue;
+					strcpy(full_request[0], forward_request);
 				}
-				else
+				else if(is_success) {
+					/* Message from client is valid.
+					   Now we have to send this message to remote server */
+					printf("This message will be sent\n\n");
+					for(int j = 0; j < header_index; j++)
+						printf("%s\n", full_request[j]);
 					break;
-				/* Core part end */
+				}
 				bzero(buf, BUF_SIZE);
+				/* Core part end */
 			}
-
-			//if(!is_success)
-				/* Some error code */
 			close(new_fd);
 		}
 		wait(NULL);
