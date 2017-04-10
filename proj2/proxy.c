@@ -31,7 +31,7 @@ void *get_addr(struct sockaddr *sa)
 
 int main(int argc, char *argv[])
 {
-	int sockfd, new_fd, opt;
+	int sockfd, new_fd;
 	char *port = NULL;
 	struct addrinfo hints, *res, *p;
 	struct sockaddr_storage their_addr;
@@ -46,18 +46,12 @@ int main(int argc, char *argv[])
 	hints.ai_socktype = SOCK_STREAM;
 	hints.ai_flags = AI_PASSIVE;
 
-	while((opt = getopt(argc, argv, "p:")) != -1) {
-		switch(opt) {
-			case 'p':
-				port = malloc(strlen(optarg) * sizeof(char));
-				strcpy(port, optarg);
-				break;
-			default:
-				fprintf(stderr, "usage: %s -p <port number>\n", argv[0]);
-				exit(EXIT_FAILURE);
-		}
+	if(argc != 2) {
+		fprintf(stderr, "usage: %s -p <port number>\n", argv[0]);
+		exit(EXIT_FAILURE);
 	}
 
+	strcpy(port, argv[1]);
 	if(port == NULL) {
 		fprintf(stderr, "Invalid port argument\n");
 		exit(EXIT_FAILURE);
@@ -180,6 +174,7 @@ int main(int argc, char *argv[])
 					strcat(forward_request, " ");
 					/* Append HTTP version */
 					strcat(forward_request, http_version);
+					printf("Final forwarded request: %s\n", forward_request);
 
 					continue;
 				}
