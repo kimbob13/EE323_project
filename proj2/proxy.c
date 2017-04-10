@@ -51,6 +51,7 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
+	port = malloc(strlen(argv[1]) * sizeof(char));
 	strcpy(port, argv[1]);
 	if(port == NULL) {
 		fprintf(stderr, "Invalid port argument\n");
@@ -103,6 +104,7 @@ int main(int argc, char *argv[])
 	}
 
 	while(1) {
+		printf("Waiting for connection...\n");
 		sin_size = sizeof(their_addr);
 		new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
 		if(new_fd == -1) {
@@ -160,8 +162,10 @@ int main(int argc, char *argv[])
 					   Request message that is sent to proxy contains full host name.
 					   So, when forward message to remote server,
 					   we must remove that host address and send only path address */
-					for(int i = 0; i < 3; i++)
-						forward_url = strchr(server_addr, '/');
+					
+					forward_url = strchr(server_addr, '/');
+					for(int i = 0; i < 2; i++)
+						forward_url = strchr(forward_url + 1, '/');
 
 
 					/* Copy request method */
