@@ -100,7 +100,6 @@ int main(int argc, char *argv[])
 	}
 
 	while(1) {
-		//printf("Waiting for connection...\n");
 		sin_size = sizeof(their_addr);
 		new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
 		if(new_fd == -1) {
@@ -131,15 +130,16 @@ int main(int argc, char *argv[])
 					break;
 				}
 				
-				/* Core part */
 				message = malloc((BUF_SIZE + 1) * sizeof(char));
 				strcpy(message, buf);
 				msg_token = strtok(buf, " ");
 				if(strcmp(message, "\r\n") == 0 || strcmp(message, "\n") == 0) {
 					/* Empty line, next line is entity body */
+					header_list[header_index] = malloc(5 * sizeof(char));
+					strcpy(header_list[header_index], "\r\n");
 					is_success = true;
 				}
-				else if(strcmp(msg_token, "GET") == 0) {
+				else if(strcmp(msg_token, "GET") == 0 || strcmp(msg_token, "HEAD") == 0) {
 					server_addr = strtok(NULL, " ");
 					if(strncmp(server_addr, "http://", 7) == 0) {
 						http_version = strtok(NULL, " ");
@@ -181,7 +181,6 @@ int main(int argc, char *argv[])
 				}
 				bzero(buf, BUF_SIZE);
 				free(message);
-				/* Core part end */
 			}
 			close(new_fd);
 			exit(EXIT_SUCCESS);
@@ -197,7 +196,7 @@ void forward_to_remote(char *forward_request, char *header_list[], int *client_s
 	/* These variables are related to sending socket,
 	   which sends data to remote server */
 	int remote_sockfd, remote_rv, host_index;
-	char remote_s[INET6_ADDRSTRLEN];
+	char remote_s[INET6_ADDRSTRLEN], remote_buf[BUF_SIZE];
 	struct addrinfo remote_hints, *remote_res, *remote_p;
 	char *hostname, *host_p;
 
@@ -211,7 +210,10 @@ void forward_to_remote(char *forward_request, char *header_list[], int *client_s
 		if(strncmp(header_list[host_index], "Host:", 5) == 0)
 			break;
 	}
-	hostname = strtok(header_list[host_index], " ");
+
+	hostname = malloc(strlen(header_list[host_index] + 1) * sizeof(char));
+	strcpy(hostname, header_list[host_index]);
+	hostname = strtok(hostname, " ");
 	hostname = strtok(NULL, " ");
 	for(host_p = hostname; ; host_p++) {
 		if(*host_p == '\r' || *host_p == '\n') {
@@ -248,136 +250,27 @@ void forward_to_remote(char *forward_request, char *header_list[], int *client_s
 
 	inet_ntop(remote_p->ai_family, get_addr((struct sockaddr *)remote_p->ai_addr), remote_s, sizeof(remote_s));
 	printf("proxy connected to remote server: %s\n", remote_s);
-
 	freeaddrinfo(remote_res);
 
-	/* These variables are related to receving socket,
-	   which receives data from remote server */
-	int recv_sockfd, recv_rv, new_recvfd, recv_child;
-	char recv_s[INET6_ADDRSTRLEN], recv_buf[BUF_SIZE] = {0};
-	struct addrinfo recv_hints, *recv_res, *recv_p;
-	struct sockaddr_storage recv_their_addr;
-	socklen_t recv_sin_size;
-	struct sigaction recv_sa;
-	int recv_yes = 1;
-	int recv_numbytes;
-
-	char *new_port = malloc(8 * sizeof(int) + 1);
-	int new_port_num = atoi(port) + 1;
-	itoa(new_port_num, new_port);
-
-	/* Receiving socket setting */
-	memset(&recv_hints, 0, sizeof(recv_hints));
-	recv_hints.ai_family = AF_INET;
-	recv_hints.ai_socktype = SOCK_STREAM;
-	recv_hints.ai_flags = AI_PASSIVE;
-
-	if((recv_rv = getaddrinfo(NULL, new_port, &recv_hints, &recv_res)) != 0) {
-		fprintf(stderr, "getaddrinfo - recv_socket: %s\n", gai_strerror(recv_rv));
+	/* Send data to the remote server */
+	if(send(remote_sockfd, forward_request, strlen(forward_request), 0) < 0) {
+		perror("remote: write");
 		return;
 	}
-
-	for(recv_p = recv_res; recv_p != NULL; recv_p = recv_p->ai_next) {
-		if((recv_sockfd = socket(recv_p->ai_family, recv_p->ai_socktype, recv_p->ai_protocol)) == -1) {
-			perror("recv_socket - socket");
-			continue;
-		}
-
-		if(setsockopt(recv_sockfd, SOL_SOCKET, SO_REUSEADDR, &recv_yes, sizeof(int)) == -1) {
-			perror("recv_sockfd - setsockopt");
+	for(int i = 0; header_list[i] != NULL; i++) {
+		if(send(remote_sockfd, header_list[i], strlen(header_list[i]), 0) < 0) {
+			perror("remote: write");
 			return;
 		}
-
-		if(bind(recv_sockfd, recv_p->ai_addr, recv_p->ai_addrlen) == -1) {
-			close(recv_sockfd);
-			perror("recv_sockfd - bind");
-			continue;
-		}
-
-		break;
-	}
-
-	if(recv_p == NULL) {
-		fprintf(stderr, "recv_sockfd: failed to bind\n");
-		return;
-	}
-
-	freeaddrinfo(recv_res);
-
-	recv_sa.sa_handler = sigchld_handler;
-	sigemptyset(&recv_sa.sa_mask);
-	recv_sa.sa_flags = SA_RESTART;
-	if(sigaction(SIGCHLD, &recv_sa, NULL) == -1) {
-		perror("recv_socket - sigaction");
-		return;
-	}
-
-	/* Send data to the remote server */
-	if(write(remote_sockfd, forward_request, strlen(forward_request)) < 0)
-		perror("remote: write");
-	for(int i = 0; header_list[i] != NULL; i++) {
-		if(write(remote_sockfd, header_list[i], strlen(header_list[i])) < 0)
-			perror("remote: write");
 	}
 
 	/* Receive data from remote server*/
-	printf("Reading start\n");
-	recv_sin_size = sizeof(recv_their_addr);
-	new_recvfd = accept(recv_sockfd, (struct sockaddr *)&recv_their_addr, &recv_sin_size);
-	inet_ntop(recv_their_addr.ss_family, get_addr((struct sockaddr *)&recv_their_addr), recv_s, sizeof(recv_s));
-
-	recv_child = fork();
-	if(recv_child == 0) {
-		close(recv_sockfd);
-		while(1) {
-			recv_numbytes = read(new_recvfd, recv_buf, BUF_SIZE);
-			if(recv_numbytes == -1) {
-				perror("recv_sockfd - read");
-				break;
-			}
-			else if(recv_numbytes == 0) {
-				break;
-			}
-
-			if(write(*client_sockfd, recv_buf, BUF_SIZE) < 0) {
-				perror("recv_sockfd - write");
-				break;
-			}
-			bzero(recv_buf, BUF_SIZE);
+	while(recv(remote_sockfd, remote_buf, BUF_SIZE, 0) > 0) {
+		if(send(*client_sockfd, remote_buf, BUF_SIZE, 0) < 0) {
+			perror("remote_sockfd - send");
+			return;
 		}
-
-		close(new_recvfd);
-		exit(EXIT_SUCCESS);
+		printf("remote_buf: %s", remote_buf);
 	}
-	wait(NULL);
-	close(recv_sockfd);
-}
-
-void itoa(int n, char s[])
-{
-	int i, sign;
-
-	if((sign = n) < 0)
-		n = -n;
-	i = 0;
-	do {
-		s[i++] = n % 10 + '0';
-	} while((n /= 10) > 0);
-
-	if(sign < 0)
-		s[i++] = '-';
-	s[i] = '\0';
-	reverse_string(s);
-}
-
-void reverse_string(char s[])
-{
-	int i, j;
-	char c;
-
-	for(i = 0, j = strlen(s) - 1; i < j; i++, j--) {
-		c = s[i];
-		s[i] = s[j];
-		s[j] = c;
-	}
+	close(remote_sockfd);
 }
