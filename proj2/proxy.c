@@ -11,6 +11,7 @@
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include "proxy.h"
 
 #define BACKLOG 20
 #define BUF_SIZE (1024 * 500)
@@ -117,22 +118,19 @@ int main(int argc, char *argv[])
 		child_pid = fork();
 		if(child_pid == 0) {
 			bool is_valid_request, is_success;
-			char *message;
-			char *header_list[20];
+			char *message, *msg_token, *server_addr, *http_version;
+			char *forward_request, *forward_url, *header_list[20] = {NULL};
 			int header_index = 0;
 			
 			close(sockfd);
 			while(1) {
-				char *msg_token, *server_addr, *http_version;
-				char *forward_request, *forward_url;
-
 				is_valid_request = false;
 				is_success = false;
 
 				numbytes = read(new_fd, buf, BUF_SIZE);
 				if(numbytes == -1) {
 					perror("read");
-					break;
+					exit(EXIT_FAILURE);
 				}
 				else if(numbytes == 0) {
 					break;
@@ -183,10 +181,7 @@ int main(int argc, char *argv[])
 				else if(is_success) {
 					/* Message from client is valid.
 					   Now we have to send this message to remote server */
-					printf("%s", forward_request);
-					for(int i = 0; i < header_index; i++)
-						printf("%s", header_list[i]);
-					printf("\n");
+					forward_to_remote(forward_request, header_list);
 					break;
 				}
 				bzero(buf, BUF_SIZE);
@@ -200,4 +195,60 @@ int main(int argc, char *argv[])
 		close(new_fd);
 	}
 
+}
+
+void forward_to_remote(char *forward_request, char *header_list[])
+{
+	int remote_sockfd, remote_rv, host_index;
+	char remote_s[INET6_ADDRSTRLEN], remote_buf[BUF_SIZE] = {0};
+	struct addrinfo remote_hints, *remote_res, *remote_p;
+	char *hostname, *host_p;
+
+	memset(&remote_hints, 0, sizeof(remote_hints));
+	remote_hints.ai_family = AF_INET;
+	remote_hints.ai_socktype = SOCK_STREAM;
+
+	/* Host name parsing */
+	for(host_index = 0; header_list[host_index] != NULL; host_index++) {
+		if(strncmp(header_list[host_index], "Host:", 5) == 0)
+			break;
+	}
+	hostname = strtok(header_list[host_index], " ");
+	hostname = strtok(NULL, " ");
+	for(host_p = hostname; ; host_p++) {
+		if(*host_p == '\r' || *host_p == '\n') {
+			*host_p = '\0';
+			break;
+		}
+	}
+
+	if((remote_rv = getaddrinfo(hostname, "http", &remote_hints, &remote_res)) != 0) {
+		fprintf(stderr, "getaddrinfo - remote: %s\n", gai_strerror(remote_rv));
+		return;
+	}
+
+	for(remote_p = remote_res; remote_p != NULL; remote_p = remote_p->ai_next) {
+		if((remote_sockfd = socket(remote_p->ai_family, remote_p->ai_socktype, remote_p->ai_protocol)) == -1) {
+			perror("remote: socket");
+			continue;
+		}
+
+		if(connect(remote_sockfd, remote_p->ai_addr, remote_p->ai_addrlen) == -1) {
+			close(remote_sockfd);
+			perror("remote: connect");
+			continue;
+		}
+
+		break;
+	}
+
+	if(remote_p == NULL) {
+		fprintf(stderr, "remote: failed to connect\n");
+		return;
+	}
+
+	inet_ntop(remote_p->ai_family, get_addr((struct sockaddr *)remote_p->ai_addr), remote_s, sizeof(remote_s));
+	printf("proxy connected to remote server: %s\n", remote_s);
+
+	freeaddrinfo(remote_res);
 }

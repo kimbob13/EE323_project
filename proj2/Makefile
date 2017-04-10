@@ -2,6 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -g -std=gnu99
 
 SOURCES = proxy.c
+HEADER = proxy.h
 TARGET = proxy
 
 .PHONY: all clean tags submit
@@ -20,4 +21,4 @@ tags:
 	@ctags $(SOURCES)
 
 submit: clean
-	@tar zcf 20130184_assign2.tar.gz $(SOURCES) README Makefile
+	@tar zcf 20130184_assign2.tar.gz $(SOURCES) $(HEADER) README Makefile
