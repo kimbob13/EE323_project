@@ -13,10 +13,6 @@
 #include <arpa/inet.h>
 #include "proxy.h"
 
-#define BACKLOG 20
-#define BUF_SIZE (1024 * 500)
-#define UNUSED __attribute__ ((unused))
-
 void sigchld_handler(int s UNUSED)
 {
 	while(waitpid(-1, NULL, WNOHANG) > 0);
@@ -33,7 +29,6 @@ void *get_addr(struct sockaddr *sa)
 int main(int argc, char *argv[])
 {
 	int sockfd, new_fd;
-	char *port = NULL;
 	struct addrinfo hints, *res, *p;
 	struct sockaddr_storage their_addr;
 	socklen_t sin_size;
@@ -181,7 +176,7 @@ int main(int argc, char *argv[])
 				else if(is_success) {
 					/* Message from client is valid.
 					   Now we have to send this message to remote server */
-					forward_to_remote(forward_request, header_list);
+					forward_to_remote(forward_request, header_list, &new_fd);
 					break;
 				}
 				bzero(buf, BUF_SIZE);
@@ -197,13 +192,16 @@ int main(int argc, char *argv[])
 
 }
 
-void forward_to_remote(char *forward_request, char *header_list[])
+void forward_to_remote(char *forward_request, char *header_list[], int *client_sockfd)
 {
+	/* These variables are related to sending socket,
+	   which sends data to remote server */
 	int remote_sockfd, remote_rv, host_index;
-	char remote_s[INET6_ADDRSTRLEN], remote_buf[BUF_SIZE] = {0};
+	char remote_s[INET6_ADDRSTRLEN];
 	struct addrinfo remote_hints, *remote_res, *remote_p;
 	char *hostname, *host_p;
 
+	/* Sending socket setting */
 	memset(&remote_hints, 0, sizeof(remote_hints));
 	remote_hints.ai_family = AF_INET;
 	remote_hints.ai_socktype = SOCK_STREAM;
@@ -253,6 +251,67 @@ void forward_to_remote(char *forward_request, char *header_list[])
 
 	freeaddrinfo(remote_res);
 
+	/* These variables are related to receving socket,
+	   which receives data from remote server */
+	int recv_sockfd, recv_rv, new_recvfd, recv_child;
+	char recv_s[INET6_ADDRSTRLEN], recv_buf[BUF_SIZE] = {0};
+	struct addrinfo recv_hints, *recv_res, *recv_p;
+	struct sockaddr_storage recv_their_addr;
+	socklen_t recv_sin_size;
+	struct sigaction recv_sa;
+	int recv_yes = 1;
+	int recv_numbytes;
+
+	char *new_port = malloc(8 * sizeof(int) + 1);
+	int new_port_num = atoi(port) + 1;
+	itoa(new_port_num, new_port);
+
+	/* Receiving socket setting */
+	memset(&recv_hints, 0, sizeof(recv_hints));
+	recv_hints.ai_family = AF_INET;
+	recv_hints.ai_socktype = SOCK_STREAM;
+	recv_hints.ai_flags = AI_PASSIVE;
+
+	if((recv_rv = getaddrinfo(NULL, new_port, &recv_hints, &recv_res)) != 0) {
+		fprintf(stderr, "getaddrinfo - recv_socket: %s\n", gai_strerror(recv_rv));
+		return;
+	}
+
+	for(recv_p = recv_res; recv_p != NULL; recv_p = recv_p->ai_next) {
+		if((recv_sockfd = socket(recv_p->ai_family, recv_p->ai_socktype, recv_p->ai_protocol)) == -1) {
+			perror("recv_socket - socket");
+			continue;
+		}
+
+		if(setsockopt(recv_sockfd, SOL_SOCKET, SO_REUSEADDR, &recv_yes, sizeof(int)) == -1) {
+			perror("recv_sockfd - setsockopt");
+			return;
+		}
+
+		if(bind(recv_sockfd, recv_p->ai_addr, recv_p->ai_addrlen) == -1) {
+			close(recv_sockfd);
+			perror("recv_sockfd - bind");
+			continue;
+		}
+
+		break;
+	}
+
+	if(recv_p == NULL) {
+		fprintf(stderr, "recv_sockfd: failed to bind\n");
+		return;
+	}
+
+	freeaddrinfo(recv_res);
+
+	recv_sa.sa_handler = sigchld_handler;
+	sigemptyset(&recv_sa.sa_mask);
+	recv_sa.sa_flags = SA_RESTART;
+	if(sigaction(SIGCHLD, &recv_sa, NULL) == -1) {
+		perror("recv_socket - sigaction");
+		return;
+	}
+
 	/* Send data to the remote server */
 	if(write(remote_sockfd, forward_request, strlen(forward_request)) < 0)
 		perror("remote: write");
@@ -262,7 +321,63 @@ void forward_to_remote(char *forward_request, char *header_list[])
 	}
 
 	/* Receive data from remote server*/
-	while(read(remote_sockfd, remote_buf, BUF_SIZE) > 0) {
-		printf("%s", remote_buf);
+	printf("Reading start\n");
+	recv_sin_size = sizeof(recv_their_addr);
+	new_recvfd = accept(recv_sockfd, (struct sockaddr *)&recv_their_addr, &recv_sin_size);
+	inet_ntop(recv_their_addr.ss_family, get_addr((struct sockaddr *)&recv_their_addr), recv_s, sizeof(recv_s));
+
+	recv_child = fork();
+	if(recv_child == 0) {
+		close(recv_sockfd);
+		while(1) {
+			recv_numbytes = read(new_recvfd, recv_buf, BUF_SIZE);
+			if(recv_numbytes == -1) {
+				perror("recv_sockfd - read");
+				break;
+			}
+			else if(recv_numbytes == 0) {
+				break;
+			}
+
+			if(write(*client_sockfd, recv_buf, BUF_SIZE) < 0) {
+				perror("recv_sockfd - write");
+				break;
+			}
+			bzero(recv_buf, BUF_SIZE);
+		}
+
+		close(new_recvfd);
+		exit(EXIT_SUCCESS);
+	}
+	wait(NULL);
+	close(recv_sockfd);
+}
+
+void itoa(int n, char s[])
+{
+	int i, sign;
+
+	if((sign = n) < 0)
+		n = -n;
+	i = 0;
+	do {
+		s[i++] = n % 10 + '0';
+	} while((n /= 10) > 0);
+
+	if(sign < 0)
+		s[i++] = '-';
+	s[i] = '\0';
+	reverse_string(s);
+}
+
+void reverse_string(char s[])
+{
+	int i, j;
+	char c;
+
+	for(i = 0, j = strlen(s) - 1; i < j; i++, j--) {
+		c = s[i];
+		s[i] = s[j];
+		s[j] = c;
 	}
 }
