@@ -105,7 +105,7 @@ int main(int argc, char *argv[])
 	}
 
 	while(1) {
-		printf("Waiting for connection...\n");
+		//printf("Waiting for connection...\n");
 		sin_size = sizeof(their_addr);
 		new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
 		if(new_fd == -1) {
@@ -222,6 +222,7 @@ void forward_to_remote(char *forward_request, char *header_list[])
 		}
 	}
 
+	/* Get address information of remote server, via http service */
 	if((remote_rv = getaddrinfo(hostname, "http", &remote_hints, &remote_res)) != 0) {
 		fprintf(stderr, "getaddrinfo - remote: %s\n", gai_strerror(remote_rv));
 		return;
@@ -251,4 +252,17 @@ void forward_to_remote(char *forward_request, char *header_list[])
 	printf("proxy connected to remote server: %s\n", remote_s);
 
 	freeaddrinfo(remote_res);
+
+	/* Send data to the remote server */
+	if(write(remote_sockfd, forward_request, strlen(forward_request)) < 0)
+		perror("remote: write");
+	for(int i = 0; header_list[i] != NULL; i++) {
+		if(write(remote_sockfd, header_list[i], strlen(header_list[i])) < 0)
+			perror("remote: write");
+	}
+
+	/* Receive data from remote server*/
+	while(read(remote_sockfd, remote_buf, BUF_SIZE) > 0) {
+		printf("%s", remote_buf);
+	}
 }
