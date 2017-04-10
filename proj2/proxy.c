@@ -120,13 +120,13 @@ int main(int argc, char *argv[])
 
 		child_pid = fork();
 		if(child_pid == 0) {
-			bool is_success;
+			bool is_valid_request;
 			
 			close(sockfd);
 			while(1) {
 				char *msg_token;
 
-				is_success = false;
+				is_valid_request = false;
 
 				numbytes = read(new_fd, buf, BUF_SIZE);
 				if(numbytes == -1) {
@@ -140,15 +140,47 @@ int main(int argc, char *argv[])
 				
 				msg_token = strtok(buf, " ");
 				if(strcmp(msg_token, "GET") == 0) {
-					msg_token = strtok(NULL, " ");
-					if(strncmp(msg_token, "http://", 7)) {
-						msg_token = strtok(NULL, " ");
-						if(strcmp(msg_token, "HTTP/1.0"))
-							is_success = true;
+					char *server_addr;
+					server_addr = strtok(NULL, " ");
+					if(strncmp(server_addr, "http://", 7) == 0) {
+						char *http_version;
+						http_version = strtok(NULL, " ");
+						if(strncmp(http_version, "HTTP/1.0", 8) == 0) {
+							is_valid_request = true;
+						}
 					}
 				}
+				else if(msg_token[strlen(msg_token) - 2]  == ':') {
+					/* Header field */
+				}
+				else if(strcmp(msg_token, "\r\n") == 0 || strcmp(msg_token, "\n") == 0) {
+					/* Empty line, next line is entity data */
+				}
 
-				if(is_success) {
+				if(is_valid_request) {
+					char *forward_request;
+					char *forward_url;
+					forward_request = malloc(strlen(buf) * sizeof(char));
+
+					/* Find server path that is to be forwarded.
+					   Request message that is sent to proxy contains full host name.
+					   So, when forward message to remote server,
+					   we must remove that host address and send only path address */
+					for(int i = 0; i < 3; i++)
+						forward_url = strchr(server_addr, '/');
+
+
+					/* Copy request method */
+					strcpy(forward_request, msg_token);
+					/* Append space */
+					strcat(forward_request, " ");
+					/* Append request URL */
+					strcat(forward_request, forward_url);
+					/* Append space */
+					strcat(forward_request, " ");
+					/* Append HTTP version */
+					strcat(forward_request, http_version);
+
 					continue;
 				}
 				else
