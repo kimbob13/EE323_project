@@ -195,7 +195,7 @@ void forward_to_remote(char *forward_request, char *header_list[], int *client_s
 {
 	/* These variables are related to sending socket,
 	   which sends data to remote server */
-	int remote_sockfd, remote_rv, host_index;
+	int remote_sockfd, remote_rv, host_index, remote_numbytes;
 	char remote_s[INET6_ADDRSTRLEN], remote_buf[BUF_SIZE];
 	struct addrinfo remote_hints, *remote_res, *remote_p;
 	char *hostname, *host_p;
@@ -253,21 +253,28 @@ void forward_to_remote(char *forward_request, char *header_list[], int *client_s
 	freeaddrinfo(remote_res);
 
 	/* Send data to the remote server */
-	if(send(remote_sockfd, forward_request, strlen(forward_request), 0) < 0) {
+	if(write(remote_sockfd, forward_request, strlen(forward_request)) < 0) {
 		perror("remote: write");
 		return;
 	}
 	for(int i = 0; header_list[i] != NULL; i++) {
-		if(send(remote_sockfd, header_list[i], strlen(header_list[i]), 0) < 0) {
+		if(write(remote_sockfd, header_list[i], strlen(header_list[i])) < 0) {
 			perror("remote: write");
 			return;
 		}
 	}
 
 	/* Receive data from remote server*/
-	while(recv(remote_sockfd, remote_buf, BUF_SIZE, 0) > 0) {
-		if(send(*client_sockfd, remote_buf, BUF_SIZE, 0) < 0) {
-			perror("remote_sockfd - send");
+	while(1) {
+		remote_numbytes = read(remote_sockfd, remote_buf, BUF_SIZE);
+		if(remote_numbytes == -1) {
+			perror("remote_sockfd - read");
+			return;
+		}
+		else if(remote_numbytes == 0)
+			break;
+		if(write(*client_sockfd, remote_buf, BUF_SIZE) < 0) {
+			perror("remote_sockfd - write");
 			return;
 		}
 		printf("remote_buf: %s", remote_buf);
