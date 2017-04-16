@@ -176,7 +176,7 @@ int main(int argc, char *argv[])
 				else if(is_success) {
 					/* Message from client is valid.
 					   Now we have to send this message to remote server */
-					forward_to_remote(forward_request, header_list, &new_fd);
+					forward_to_remote(forward_request, header_list, new_fd);
 					break;
 				}
 				bzero(buf, BUF_SIZE);
@@ -191,7 +191,7 @@ int main(int argc, char *argv[])
 
 }
 
-void forward_to_remote(char *forward_request, char *header_list[], int *client_sockfd)
+void forward_to_remote(char *forward_request, char *header_list[], int client_sockfd)
 {
 	/* These variables are related to sending socket,
 	   which sends data to remote server */
@@ -273,11 +273,11 @@ void forward_to_remote(char *forward_request, char *header_list[], int *client_s
 		}
 		else if(remote_numbytes == 0)
 			break;
-		if(write(*client_sockfd, remote_buf, BUF_SIZE) < 0) {
+		if(write(client_sockfd, remote_buf, BUF_SIZE) < 0) {
 			perror("remote_sockfd - write");
 			return;
 		}
-		printf("remote_buf: %s", remote_buf);
+		//printf("remote_buf: %s", remote_buf);
 	}
 	close(remote_sockfd);
 }

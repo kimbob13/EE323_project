@@ -6,6 +6,6 @@
 #define UNUSED __attribute__ ((unused))
 
 char *port = NULL;
-void forward_to_remote(char *forward_request, char *header_list[], int *client_sockfd);
+void forward_to_remote(char *forward_request, char *header_list[], int client_sockfd);
 
 #endif
