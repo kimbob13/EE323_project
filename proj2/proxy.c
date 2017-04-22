@@ -276,10 +276,7 @@ void forward_to_remote(char *forward_request, char *header_list[], int client_so
 			break;
 		printf("remote_buf: %s", remote_buf);
 		if(strlen(remote_buf) <= 0)
-		{
-			close(client_sockfd);
 			return;
-		}
 		if(write(client_sockfd, remote_buf, BUF_SIZE) < 0) {
 			perror("remote_sockfd - write");
 			return;
