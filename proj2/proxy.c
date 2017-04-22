@@ -177,13 +177,14 @@ int main(int argc, char *argv[])
 					/* Message from client is valid.
 					   Now we have to send this message to remote server */
 					forward_to_remote(forward_request, header_list, new_fd);
-					break;
+					bzero(buf, BUF_SIZE);
+					free(message);
+					close(new_fd);
+					exit(EXIT_SUCCESS);
 				}
 				bzero(buf, BUF_SIZE);
 				free(message);
 			}
-			close(new_fd);
-			exit(EXIT_SUCCESS);
 		}
 		wait(NULL);
 		close(new_fd);
@@ -273,11 +274,16 @@ void forward_to_remote(char *forward_request, char *header_list[], int client_so
 		}
 		else if(remote_numbytes == 0)
 			break;
+		printf("remote_buf: %s", remote_buf);
+		if(strlen(remote_buf) <= 0)
+		{
+			close(client_sockfd);
+			return;
+		}
 		if(write(client_sockfd, remote_buf, BUF_SIZE) < 0) {
 			perror("remote_sockfd - write");
 			return;
 		}
-		//printf("remote_buf: %s", remote_buf);
 	}
 	close(remote_sockfd);
 }
