@@ -47,8 +47,7 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	port = malloc(strlen(argv[1]) * sizeof(char));
-	strcpy(port, argv[1]);
+	port = strdup(argv[1]);
 	if(port == NULL) {
 		fprintf(stderr, "Invalid port argument\n");
 		exit(EXIT_FAILURE);
@@ -250,7 +249,7 @@ void forward_to_remote(char *forward_request, char *header_list[], int client_so
 	}
 
 	inet_ntop(remote_p->ai_family, get_addr((struct sockaddr *)remote_p->ai_addr), remote_s, sizeof(remote_s));
-	printf("proxy connected to remote server: %s\n", remote_s);
+	//printf("proxy connected to remote server: %s\n", remote_s);
 	freeaddrinfo(remote_res);
 
 	/* Send data to the remote server */
@@ -266,21 +265,8 @@ void forward_to_remote(char *forward_request, char *header_list[], int client_so
 	}
 
 	/* Receive data from remote server*/
-	while(1) {
-		remote_numbytes = read(remote_sockfd, remote_buf, BUF_SIZE);
-		if(remote_numbytes == -1) {
-			perror("remote_sockfd - read");
-			return;
-		}
-		else if(remote_numbytes == 0)
-			break;
-		printf("remote_buf: %s", remote_buf);
-		if(strlen(remote_buf) <= 0)
-			return;
-		if(write(client_sockfd, remote_buf, BUF_SIZE) < 0) {
-			perror("remote_sockfd - write");
-			return;
-		}
+	while((remote_numbytes = recv(remote_sockfd, remote_buf, BUF_SIZE, 0)) > 0) {
+		send(client_sockfd, remote_buf, remote_numbytes, 0);
 	}
 	close(remote_sockfd);
 }
