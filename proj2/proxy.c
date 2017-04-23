@@ -110,15 +110,19 @@ int main(int argc, char *argv[])
 
 		child_pid = fork();
 		if(child_pid == 0) {
-			bool is_valid_request, is_success;
-			char *message, *msg_token, *server_addr, *http_version;
-			char *forward_request, *forward_url, *header_list[20] = {NULL};
-			int header_index = 0;
-			
+			char *message;
+			char *request_method, *server_addr, *http_version, *save_ptr;
+			char *forward_request, *forward_url;
+			char *header = NULL;
+			bool is_valid_request;
 			close(sockfd);
 			while(1) {
+				char *cur_token;
+
+				is_valid_request = false;
 
 				numbytes = recv(new_fd, buf, BUF_SIZE, 0);
+
 				/* buf doesn't receive valid string */
 				if(numbytes == -1) {
 					perror("recv");
@@ -128,112 +132,86 @@ int main(int argc, char *argv[])
 				else if(numbytes == 0) {
 					break;
 				}
-				
-				int buf_len = strlen(buf);
-				if(buf[buf_len-1] == '\n' && buf[buf_len-2] == '\r' &&
-						buf[buf_len-3] == '\n' && buf[buf_len-4] == '\r')
-				{
-					/* This request is came from tester */
-					char *request_line, *buf_p = buf;
-					int i;
 
-					printf("This request is came from python tester!!!\n");
-					
-					request_line = malloc(strlen(buf) * sizeof(char));
-					for(i = 0; *buf_p != '\r' || *buf_p != '\n'; i++, buf_p++) {
-						request_line[i] = *buf_p;
-					}
-					strcat(request_line, "\r\n\0");
-					printf("request_line: %s\n", request_line);
-
-					if(*buf_p == '\r')
-						buf_p += 2;
-					else if(*buf_p == '\n')
-						buf_p += 1;
-
-					if(*buf_p == '\r' || *buf_p == '\n') {
-						/* There is no header line */
-					}
-
-					while(strncmp(buf_p, "\n", 1) != 0 || strncmp(buf_p, "\r\n", 2) != 0) {
-						header_list[header_index] = malloc(strlen(buf) * sizeof(char));
-						for(i = 0; *buf_p != '\r' || *buf_p != '\n'; i++, buf_p++) {
-							header_list[header_index][i] = *buf_p;
+				message = strdup(buf);
+				cur_token = strtok_r(buf, " ", &save_ptr);
+				if(strcmp(cur_token, "GET") == 0) {
+					request_method = strdup(cur_token);
+					cur_token = strtok_r(NULL, " ", &save_ptr);
+					if(strncmp(cur_token, "http://", 7) == 0) {
+						server_addr = strdup(cur_token);
+						cur_token = strtok_r(NULL, "\n", &save_ptr);
+						if(strncmp(cur_token, "HTTP/1.0", 8) == 0) {
+							http_version = strdup("HTTP/1.0\r\n");
+							is_valid_request = true;
 						}
-						strcat(header_list[header_index], "\r\n\0");
-
-						if(*buf_p == '\r')
-							buf_p += 2;
-						else if(*buf_p == '\n')
-							buf_p += 1;
-						header_index++;
 					}
-					header_list[header_index] = strdup("\r\n");
-
-					/*
-					for(i = 0; i <= header_index; i++)
-						printf("%s", header_list[i]);
-					*/
 				}
-				else
-				{
-					/* This request is came from telnet */
-					is_valid_request = false;
-					is_success = false;
+				else if(strcmp(cur_token, "Host:") == 0) {
+					/* Save hostname */
+					cur_token = strtok_r(NULL, "\r", &save_ptr);
+					hostname = strdup(cur_token);
+				}
 
-					message = strdup(buf);
-					msg_token = strtok(buf, " ");
-					if(strcmp(message, "\r\n") == 0 || strcmp(message, "\n") == 0) {
-						/* Empty line, next line is entity body */
-						header_list[header_index] = strdup("\r\n");
-						is_success = true;
-					}
-					else if(strcmp(msg_token, "GET") == 0 || strcmp(msg_token, "HEAD") == 0) {
-						server_addr = strtok(NULL, " ");
-						if(strncmp(server_addr, "http://", 7) == 0) {
-							http_version = strtok(NULL, " ");
-							if(strncmp(http_version, "HTTP/1.0", 8) == 0) {
-								is_valid_request = true;
+				if(is_valid_request) {
+					forward_url = strchr(server_addr, '/');
+					for(int i = 0; i < 2; i++)
+						forward_url = strchr(forward_url + 1, '/');
+
+					forward_request = malloc((strlen(request_method) + strlen(forward_url)
+								+ strlen(http_version) + 1) * sizeof(char));
+					strcpy(forward_request, request_method);
+					strcat(forward_request, " ");
+					strcat(forward_request, forward_url);
+					strcat(forward_request, " ");
+					strcat(forward_request, http_version);
+
+					if(strcmp(save_ptr, "\0") != 0) {
+						/* There are more data in the buf.
+						 * buf data is probably come from tester code */
+
+						char *host_token, *host_save;
+
+						host_token = strdup(save_ptr);
+						host_token = strtok_r(host_token, "\r", &host_save);
+						while(host_token != '\0') {
+							if(strncmp(host_token, "Host:", 5) == 0) {
+								host_token += 6;
+								hostname = strdup(host_token);
+								printf("hostname: %s\n", hostname);
+							}
+							else {
+								host_save += 1;
+								host_token = strtok_r(NULL, "\r", &host_save);
 							}
 						}
+						
+						/* Now save_ptr point to Header list. Just forward this */
+						forward_to_remote(forward_request, save_ptr, new_fd);
+						break;
 					}
-					else if(strchr(msg_token, ':') != NULL) {
-						/* Header field */
-						header_list[header_index] = strdup(message);
-						header_index++;
-					}
-
-					if(is_valid_request) {
-						forward_request = malloc((strlen(message) + 1) * sizeof(char));
-
-						/* Find server path that is to be forwarded.
-						   Request message that is sent to proxy contains full host name.
-						   So, when forward message to remote server,
-						   we must remove that host address and send only path address */
-						forward_url = strchr(server_addr, '/');
-						for(int i = 0; i < 2; i++)
-							forward_url = strchr(forward_url + 1, '/');
-
-						/* Make forwarding request that will be sent to remote server */
-						strcpy(forward_request, msg_token);
-						strcat(forward_request, " ");
-						strcat(forward_request, forward_url);
-						strcat(forward_request, " ");
-						strcat(forward_request, http_version);
-					}
-					else if(is_success) {
-						/* Message from client is valid.
-						   Now we have to send this message to remote server */
-						forward_to_remote(forward_request, header_list, new_fd);
-						bzero(buf, BUF_SIZE);
-						free(message);
-						close(new_fd);
-						exit(EXIT_SUCCESS);
-					}
-					bzero(buf, BUF_SIZE);
-					free(message);
 				}
+				else {
+					if(header == NULL) {
+						header = malloc(BUF_SIZE * sizeof(char));
+						strcpy(header, message);
+					}
+					else {
+						strcat(header, message);
+					}
+
+					if(strcmp(buf, "\r\n") == 0 || strcmp(buf, "\n") == 0) {
+						/* All header lines were received.
+						 * Now send to remote server */
+						forward_to_remote(forward_request, header, new_fd);
+						break;
+					}
+				}
+
+				bzero(buf, BUF_SIZE);
 			}
+			close(new_fd);
+			exit(EXIT_SUCCESS);
 		}
 		wait(NULL);
 		close(new_fd);
@@ -241,36 +219,18 @@ int main(int argc, char *argv[])
 
 }
 
-void forward_to_remote(char *forward_request, char *header_list[], int client_sockfd)
+void forward_to_remote(char *forward_request, char *header, int client_sockfd)
 {
 	/* These variables are related to sending socket,
 	   which sends data to remote server */
-	int remote_sockfd, remote_rv, host_index, remote_numbytes;
+	int remote_sockfd, remote_rv, remote_numbytes;
 	char remote_s[INET6_ADDRSTRLEN], remote_buf[BUF_SIZE];
 	struct addrinfo remote_hints, *remote_res, *remote_p;
-	char *hostname, *host_p;
 
 	/* Sending socket setting */
 	memset(&remote_hints, 0, sizeof(remote_hints));
 	remote_hints.ai_family = AF_INET;
 	remote_hints.ai_socktype = SOCK_STREAM;
-
-
-	/* Host name parsing */
-	for(host_index = 0; header_list[host_index] != NULL; host_index++) {
-		if(strncmp(header_list[host_index], "Host:", 5) == 0)
-			break;
-	}
-
-	hostname = strdup(header_list[host_index]);
-	hostname = strtok(hostname, " ");
-	hostname = strtok(NULL, " ");
-	for(host_p = hostname; ; host_p++) {
-		if(*host_p == '\r' || *host_p == '\n') {
-			*host_p = '\0';
-			break;
-		}
-	}
 
 	/* Get address information of remote server, via http service */
 	if((remote_rv = getaddrinfo(hostname, "http", &remote_hints, &remote_res)) != 0) {
@@ -303,15 +263,13 @@ void forward_to_remote(char *forward_request, char *header_list[], int client_so
 	freeaddrinfo(remote_res);
 
 	/* Send data to the remote server */
-	if(write(remote_sockfd, forward_request, strlen(forward_request)) < 0) {
-		perror("remote: write");
+	if(send(remote_sockfd, forward_request, strlen(forward_request), 0) < 0) {
+		perror("remote: send");
 		return;
 	}
-	for(int i = 0; header_list[i] != NULL; i++) {
-		if(write(remote_sockfd, header_list[i], strlen(header_list[i])) < 0) {
-			perror("remote: write");
-			return;
-		}
+	if(send(remote_sockfd, header, strlen(header), 0) < 0) {
+		perror("remote: send");
+		return;
 	}
 
 	/* Receive data from remote server*/

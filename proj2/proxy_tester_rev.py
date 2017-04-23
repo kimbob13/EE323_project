@@ -145,7 +145,6 @@ def compare_url(argtuple):
      except socket.error:
           print '!!!! Socket error while attempting to talk to proxy!'  
           return False
-     #print "proxy_data: ", proxy_data
      
      # Retrieve directly
      direct_data = get_data(host, hostport, url, host)
@@ -166,12 +165,10 @@ def get_data(host, port, url, origin):
      return data.split('\n')
 
 def http_exchange(host, port, data):
-     #print "http_exchange entered"
      conn = telnetlib.Telnet()
      conn.open(host, port)
      conn.write(data)
      ret_data = conn.read_all()
-     #print "ret_data: ", ret_data
      conn.close()
      return ret_data
 

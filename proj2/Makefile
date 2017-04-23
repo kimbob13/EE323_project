@@ -21,4 +21,4 @@ tags:
 	@ctags $(SOURCES)
 
 submit: clean
-	@tar zcf 20130184_assign2.tar.gz $(SOURCES) $(HEADER) README Makefile
+	@tar zcf 20130184_assign2.tar.gz $(SOURCES) $(HEADER) readme Makefile
