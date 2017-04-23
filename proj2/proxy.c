@@ -85,6 +85,8 @@ int main(int argc, char *argv[])
 
 	freeaddrinfo(res);
 
+	/* Listening socket is properly created.
+	 * Now listen incoming request on this socket */
 	if(listen(sockfd, BACKLOG) == -1) {
 		perror("listen");
 		exit(EXIT_FAILURE);
@@ -100,6 +102,7 @@ int main(int argc, char *argv[])
 
 	while(1) {
 		sin_size = sizeof(their_addr);
+		/* There is a new connection request. Accept that requst */
 		new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
 		if(new_fd == -1) {
 			perror("accept");
@@ -108,19 +111,34 @@ int main(int argc, char *argv[])
 
 		inet_ntop(their_addr.ss_family, get_addr((struct sockaddr *)&their_addr), s, sizeof(s));
 
+		/* There is a new connection from client.
+		 * Handle this request from child process */
 		child_pid = fork();
 		if(child_pid == 0) {
 			char *message;
+
+			/* Information in request line */
 			char *request_method, *server_addr, *http_version, *save_ptr;
+			/* To forward request to remote server, we need to convert client request
+			 * to proper format, becuase of proxy server */
 			char *forward_request, *forward_url;
+			/* Header line is saved and concatenated in this variable */
 			char *header = NULL;
+			/* Check whether the request line is valid */
 			bool is_valid_request;
+			/* Check whether there is a Host header line */
+			bool is_host_header_exist = false;
+
+			/* Child process doesn't need waiting socket */
 			close(sockfd);
+
+			/* Read data until there is a line with \r\n */
 			while(1) {
 				char *cur_token;
 
 				is_valid_request = false;
 
+				/* Receive data from client */
 				numbytes = recv(new_fd, buf, BUF_SIZE, 0);
 
 				/* buf doesn't receive valid string */
@@ -136,12 +154,15 @@ int main(int argc, char *argv[])
 				message = strdup(buf);
 				cur_token = strtok_r(buf, " ", &save_ptr);
 				if(strcmp(cur_token, "GET") == 0) {
+					/* Current line is a request line */
 					request_method = strdup(cur_token);
 					cur_token = strtok_r(NULL, " ", &save_ptr);
 					if(strncmp(cur_token, "http://", 7) == 0) {
+						/* This is valid remote server name */
 						server_addr = strdup(cur_token);
 						cur_token = strtok_r(NULL, "\n", &save_ptr);
 						if(strncmp(cur_token, "HTTP/1.0", 8) == 0) {
+							/* This is valid HTTP version */
 							http_version = strdup("HTTP/1.0\r\n");
 							is_valid_request = true;
 						}
@@ -151,13 +172,20 @@ int main(int argc, char *argv[])
 					/* Save hostname */
 					cur_token = strtok_r(NULL, "\r", &save_ptr);
 					hostname = strdup(cur_token);
+					is_host_header_exist = true;
 				}
 
 				if(is_valid_request) {
+					/* Request line is valid. Now make request line for forwarding */
+
+					/* Request line from client contains full domain name.
+					 * We need to convert this portion to contain only path portion.
+					 * Until path delimeter, there are 2 '/' in the domain name */
 					forward_url = strchr(server_addr, '/');
 					for(int i = 0; i < 2; i++)
 						forward_url = strchr(forward_url + 1, '/');
 
+					/* Make new request line for forwarding */
 					forward_request = malloc((strlen(request_method) + strlen(forward_url)
 								+ strlen(http_version) + 1) * sizeof(char));
 					strcpy(forward_request, request_method);
@@ -169,9 +197,9 @@ int main(int argc, char *argv[])
 					if(strcmp(save_ptr, "\0") != 0) {
 						/* There are more data in the buf.
 						 * buf data is probably come from tester code */
-
 						char *host_token, *host_save;
 
+						/* Find Host header line in the remaining message */
 						host_token = strdup(save_ptr);
 						host_token = strtok_r(host_token, "\r", &host_save);
 						while(host_token != '\0') {
@@ -179,6 +207,8 @@ int main(int argc, char *argv[])
 								host_token += 6;
 								hostname = strdup(host_token);
 								printf("hostname: %s\n", hostname);
+								is_host_header_exist = true;
+								break;
 							}
 							else {
 								host_save += 1;
@@ -186,33 +216,63 @@ int main(int argc, char *argv[])
 							}
 						}
 						
-						/* Now save_ptr point to Header list. Just forward this */
-						forward_to_remote(forward_request, save_ptr, new_fd);
+						if(is_host_header_exist) {
+							/* Now save_ptr point to Header list. Just forward this */
+							forward_to_remote(forward_request, save_ptr, new_fd);
+						}
+						else {
+							/* There is no Host header line. 
+							 * Send error message to client */
+							char *bad_request;
+
+							bad_request = strdup("HTTP/1.0 400 Bad Request\r\n");
+							if(send(new_fd, bad_request, strlen(bad_request), 0) < 0) {
+								perror("send - bad request");
+								exit(EXIT_FAILURE);
+							}
+						}
 						break;
 					}
 				}
 				else {
+					/* We encounter first header line.
+					 * Make space for this header line, and copy */
 					if(header == NULL) {
 						header = malloc(BUF_SIZE * sizeof(char));
 						strcpy(header, message);
 					}
+					/* There are already header line.
+					 * We just concatenate new header line to the header variable */
 					else {
 						strcat(header, message);
 					}
 
 					if(strcmp(buf, "\r\n") == 0 || strcmp(buf, "\n") == 0) {
-						/* All header lines were received.
-						 * Now send to remote server */
-						forward_to_remote(forward_request, header, new_fd);
+						/* All header lines were received. */
+						if(is_host_header_exist) {
+							 /* Now send to remote server */
+							forward_to_remote(forward_request, header, new_fd);
+						}
+						else {
+							/* There is no Host header line. 
+							 * Send error message to client */
+							char *bad_request;
+
+							bad_request = strdup("HTTP/1.0 400 Bad Request\r\n");
+							if(send(new_fd, bad_request, strlen(bad_request), 0) < 0) {
+								perror("send - bad request");
+								exit(EXIT_FAILURE);
+							}
+						}
 						break;
 					}
 				}
-
 				bzero(buf, BUF_SIZE);
 			}
 			close(new_fd);
 			exit(EXIT_SUCCESS);
 		}
+		/* Wait until previously created child process is finished */
 		wait(NULL);
 		close(new_fd);
 	}
@@ -259,7 +319,6 @@ void forward_to_remote(char *forward_request, char *header, int client_sockfd)
 	}
 
 	inet_ntop(remote_p->ai_family, get_addr((struct sockaddr *)remote_p->ai_addr), remote_s, sizeof(remote_s));
-	//printf("proxy connected to remote server: %s\n", remote_s);
 	freeaddrinfo(remote_res);
 
 	/* Send data to the remote server */
