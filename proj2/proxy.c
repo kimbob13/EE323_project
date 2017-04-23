@@ -117,72 +117,122 @@ int main(int argc, char *argv[])
 			
 			close(sockfd);
 			while(1) {
-				is_valid_request = false;
-				is_success = false;
 
-				numbytes = read(new_fd, buf, BUF_SIZE);
+				numbytes = recv(new_fd, buf, BUF_SIZE, 0);
+				/* buf doesn't receive valid string */
 				if(numbytes == -1) {
-					perror("read");
+					perror("recv");
 					exit(EXIT_FAILURE);
 				}
+				/* There is no more string to be read in the socket */
 				else if(numbytes == 0) {
 					break;
 				}
 				
-				message = malloc((BUF_SIZE + 1) * sizeof(char));
-				strcpy(message, buf);
-				msg_token = strtok(buf, " ");
-				if(strcmp(message, "\r\n") == 0 || strcmp(message, "\n") == 0) {
-					/* Empty line, next line is entity body */
-					header_list[header_index] = malloc(5 * sizeof(char));
-					strcpy(header_list[header_index], "\r\n");
-					is_success = true;
+				int buf_len = strlen(buf);
+				if(buf[buf_len-1] == '\n' && buf[buf_len-2] == '\r' &&
+						buf[buf_len-3] == '\n' && buf[buf_len-4] == '\r')
+				{
+					/* This request is came from tester */
+					char *request_line, *buf_p = buf;
+					int i;
+
+					printf("This request is came from python tester!!!\n");
+					
+					request_line = malloc(strlen(buf) * sizeof(char));
+					for(i = 0; *buf_p != '\r' || *buf_p != '\n'; i++, buf_p++) {
+						request_line[i] = *buf_p;
+					}
+					strcat(request_line, "\r\n\0");
+					printf("request_line: %s\n", request_line);
+
+					if(*buf_p == '\r')
+						buf_p += 2;
+					else if(*buf_p == '\n')
+						buf_p += 1;
+
+					if(*buf_p == '\r' || *buf_p == '\n') {
+						/* There is no header line */
+					}
+
+					while(strncmp(buf_p, "\n", 1) != 0 || strncmp(buf_p, "\r\n", 2) != 0) {
+						header_list[header_index] = malloc(strlen(buf) * sizeof(char));
+						for(i = 0; *buf_p != '\r' || *buf_p != '\n'; i++, buf_p++) {
+							header_list[header_index][i] = *buf_p;
+						}
+						strcat(header_list[header_index], "\r\n\0");
+
+						if(*buf_p == '\r')
+							buf_p += 2;
+						else if(*buf_p == '\n')
+							buf_p += 1;
+						header_index++;
+					}
+					header_list[header_index] = strdup("\r\n");
+
+					/*
+					for(i = 0; i <= header_index; i++)
+						printf("%s", header_list[i]);
+					*/
 				}
-				else if(strcmp(msg_token, "GET") == 0 || strcmp(msg_token, "HEAD") == 0) {
-					server_addr = strtok(NULL, " ");
-					if(strncmp(server_addr, "http://", 7) == 0) {
-						http_version = strtok(NULL, " ");
-						if(strncmp(http_version, "HTTP/1.0", 8) == 0) {
-							is_valid_request = true;
+				else
+				{
+					/* This request is came from telnet */
+					is_valid_request = false;
+					is_success = false;
+
+					message = strdup(buf);
+					msg_token = strtok(buf, " ");
+					if(strcmp(message, "\r\n") == 0 || strcmp(message, "\n") == 0) {
+						/* Empty line, next line is entity body */
+						header_list[header_index] = strdup("\r\n");
+						is_success = true;
+					}
+					else if(strcmp(msg_token, "GET") == 0 || strcmp(msg_token, "HEAD") == 0) {
+						server_addr = strtok(NULL, " ");
+						if(strncmp(server_addr, "http://", 7) == 0) {
+							http_version = strtok(NULL, " ");
+							if(strncmp(http_version, "HTTP/1.0", 8) == 0) {
+								is_valid_request = true;
+							}
 						}
 					}
-				}
-				else if(strchr(msg_token, ':') != NULL) {
-					/* Header field */
-					header_list[header_index] = malloc((strlen(message) + 1) * sizeof(char));
-					strcpy(header_list[header_index], message);
-					header_index++;
-				}
+					else if(strchr(msg_token, ':') != NULL) {
+						/* Header field */
+						header_list[header_index] = strdup(message);
+						header_index++;
+					}
 
-				if(is_valid_request) {
-					forward_request = malloc((strlen(message) + 1) * sizeof(char));
+					if(is_valid_request) {
+						forward_request = malloc((strlen(message) + 1) * sizeof(char));
 
-					/* Find server path that is to be forwarded.
-					   Request message that is sent to proxy contains full host name.
-					   So, when forward message to remote server,
-					   we must remove that host address and send only path address */
-					forward_url = strchr(server_addr, '/');
-					for(int i = 0; i < 2; i++)
-						forward_url = strchr(forward_url + 1, '/');
+						/* Find server path that is to be forwarded.
+						   Request message that is sent to proxy contains full host name.
+						   So, when forward message to remote server,
+						   we must remove that host address and send only path address */
+						forward_url = strchr(server_addr, '/');
+						for(int i = 0; i < 2; i++)
+							forward_url = strchr(forward_url + 1, '/');
 
-					/* Make forwarding request that will be sent to remote server */
-					strcpy(forward_request, msg_token);
-					strcat(forward_request, " ");
-					strcat(forward_request, forward_url);
-					strcat(forward_request, " ");
-					strcat(forward_request, http_version);
-				}
-				else if(is_success) {
-					/* Message from client is valid.
-					   Now we have to send this message to remote server */
-					forward_to_remote(forward_request, header_list, new_fd);
+						/* Make forwarding request that will be sent to remote server */
+						strcpy(forward_request, msg_token);
+						strcat(forward_request, " ");
+						strcat(forward_request, forward_url);
+						strcat(forward_request, " ");
+						strcat(forward_request, http_version);
+					}
+					else if(is_success) {
+						/* Message from client is valid.
+						   Now we have to send this message to remote server */
+						forward_to_remote(forward_request, header_list, new_fd);
+						bzero(buf, BUF_SIZE);
+						free(message);
+						close(new_fd);
+						exit(EXIT_SUCCESS);
+					}
 					bzero(buf, BUF_SIZE);
 					free(message);
-					close(new_fd);
-					exit(EXIT_SUCCESS);
 				}
-				bzero(buf, BUF_SIZE);
-				free(message);
 			}
 		}
 		wait(NULL);
@@ -205,14 +255,14 @@ void forward_to_remote(char *forward_request, char *header_list[], int client_so
 	remote_hints.ai_family = AF_INET;
 	remote_hints.ai_socktype = SOCK_STREAM;
 
+
 	/* Host name parsing */
 	for(host_index = 0; header_list[host_index] != NULL; host_index++) {
 		if(strncmp(header_list[host_index], "Host:", 5) == 0)
 			break;
 	}
 
-	hostname = malloc(strlen(header_list[host_index] + 1) * sizeof(char));
-	strcpy(hostname, header_list[host_index]);
+	hostname = strdup(header_list[host_index]);
 	hostname = strtok(hostname, " ");
 	hostname = strtok(NULL, " ");
 	for(host_p = hostname; ; host_p++) {
