@@ -120,7 +120,6 @@ int sr_handle_ip(struct sr_instance *sr,
 	sr_ip_hdr_t *ip_hdr = (sr_ip_hdr_t *)(eth_frame + 1);
 	
 	print_hdr_ip((uint8_t *)ip_hdr);
-	uint16_t ip_checksum = cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t));
 	if(cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t)) != 0xffff)
 	{
 		/* Invalid checksum */
