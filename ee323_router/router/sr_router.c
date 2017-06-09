@@ -117,10 +117,11 @@ int sr_handle_ip(struct sr_instance *sr,
 		char *interface)
 {
 	sr_ethernet_hdr_t *eth_frame = (sr_ethernet_hdr_t *)packet;
-	sr_ip_hdr_t *ip_datagram = (sr_ip_hdr_t *)(eth_frame + 1);
-
-	uint16_t ip_checksum = cksum((const void *)ip_datagram, len);
-	if(ip_checksum != ip_datagram->ip_sum)
+	sr_ip_hdr_t *ip_hdr = (sr_ip_hdr_t *)(eth_frame + 1);
+	
+	print_hdr_ip((uint8_t *)ip_hdr);
+	uint16_t ip_checksum = cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t));
+	if(cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t)) != 0xffff)
 	{
 		/* Invalid checksum */
 		fprintf(stderr, "Not a valid packet: invalid ip checksum.\n");
@@ -170,36 +171,49 @@ int sr_handle_arp(struct sr_instance *sr,
 	{
 		case 1:
 		{
-			/* This is an ARP request packet */
-			uint8_t *arp_reply = malloc(sizeof(sr_ethernet_hdr_t) +
-					sizeof(sr_arp_hdr_t));
+			/* This is an ARP request packet.
+			 * We have to send ARP reply packet */
+			uint8_t *arp_reply_eth = malloc(sizeof(sr_ethernet_hdr_t));
 			/* Destination MAC address is requester's MAC address */
-			memcpy(((sr_ethernet_hdr_t *)arp_reply)->ether_dhost,
+			memcpy(((sr_ethernet_hdr_t *)arp_reply_eth)->ether_dhost,
 					eth_frame->ether_shost,
 					sizeof(uint8_t) * ETHER_ADDR_LEN);
 			/* Source MAC address is router's MAC address */
-			memcpy(((sr_ethernet_hdr_t *)arp_reply)->ether_shost,
+			memcpy(((sr_ethernet_hdr_t *)arp_reply_eth)->ether_shost,
 					cur_if->addr,
 					sizeof(uint8_t) * ETHER_ADDR_LEN);
 			/* This ARP reply's ethernet frame type is arp */
-			((sr_ethernet_hdr_t *)arp_reply)->ether_type =
+			((sr_ethernet_hdr_t *)arp_reply_eth)->ether_type =
 				htons(ethertype_arp);
-			print_hdr_eth(arp_reply);
 
-			((sr_arp_hdr_t *)arp_reply)->ar_hrd = arp_req->ar_hrd;
-			((sr_arp_hdr_t *)arp_reply)->ar_pro = arp_req->ar_pro;
-			((sr_arp_hdr_t *)arp_reply)->ar_hln = arp_req->ar_hln;
-			((sr_arp_hdr_t *)arp_reply)->ar_pln = arp_req->ar_pln;
-			((sr_arp_hdr_t *)arp_reply)->ar_op = htons(arp_op_reply);
-			memcpy(((sr_arp_hdr_t *)arp_reply)->ar_sha,
+			uint8_t *arp_reply_arp = malloc(sizeof(sr_arp_hdr_t));
+			((sr_arp_hdr_t *)arp_reply_arp)->ar_hrd = arp_req->ar_hrd;
+			((sr_arp_hdr_t *)arp_reply_arp)->ar_pro = arp_req->ar_pro;
+			((sr_arp_hdr_t *)arp_reply_arp)->ar_hln = arp_req->ar_hln;
+			((sr_arp_hdr_t *)arp_reply_arp)->ar_pln = arp_req->ar_pln;
+			((sr_arp_hdr_t *)arp_reply_arp)->ar_op = htons(arp_op_reply);
+			memcpy(((sr_arp_hdr_t *)arp_reply_arp)->ar_sha,
 					cur_if->addr,
 					sizeof(uint8_t) * ETHER_ADDR_LEN);
-			((sr_arp_hdr_t *)arp_reply)->ar_sip = arp_req->ar_tip;
-			memcpy(((sr_arp_hdr_t *)arp_reply)->ar_tha,
+			((sr_arp_hdr_t *)arp_reply_arp)->ar_sip = arp_req->ar_tip;
+			memcpy(((sr_arp_hdr_t *)arp_reply_arp)->ar_tha,
 					arp_req->ar_sha,
 					sizeof(uint8_t) * ETHER_ADDR_LEN);
-			((sr_arp_hdr_t *)arp_reply)->ar_tip = arp_req->ar_sip;
-			print_hdr_arp(arp_reply);
+			((sr_arp_hdr_t *)arp_reply_arp)->ar_tip = arp_req->ar_sip;
+
+			uint8_t *arp_reply = malloc(sizeof(sr_ethernet_hdr_t) +
+				sizeof(sr_arp_hdr_t));
+			memcpy(arp_reply, arp_reply_eth, sizeof(sr_ethernet_hdr_t));
+			memcpy(arp_reply + sizeof(sr_ethernet_hdr_t),
+					arp_reply_arp, sizeof(sr_arp_hdr_t));
+			free(arp_reply_eth);
+			free(arp_reply_arp);
+			unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
+			if(!sr_send_packet(sr, arp_reply, len, (const char *)cur_if->name))
+			{
+				fprintf(stderr, "Send fail.\n");
+				return -1;
+			}
 			break;
 		}
 		case 2:
