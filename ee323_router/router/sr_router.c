@@ -139,14 +139,14 @@ int sr_handle_ip(struct sr_instance *sr,
 		/* Error in decremeting ttl */
 	}
 	
-	print_hdr_ip((uint8_t *)ip_hdr);
+	/* print_hdr_ip((uint8_t *)ip_hdr); */
 	switch(ip_hdr->ip_p)
 	{
 		case 1:
 		{
 			/* This IP datagram contains ICMP header. */
 			sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(ip_hdr + 1);
-			print_hdr_icmp((uint8_t *)icmp_hdr);
+			/* print_hdr_icmp((uint8_t *)icmp_hdr); */
 			if(icmp_hdr->icmp_type == 8)
 			{
 				/* This is ICMP echo request */
@@ -164,11 +164,13 @@ int sr_handle_ip(struct sr_instance *sr,
 				if(cur_if == NULL)
 				{
 					/* This ICMP echo reqeust should be just forwarded */
-					struct sr_arpentry *arp_entry = sr_arpcache_lookup(&(sr->cache), ntohl(ip_hdr->ip_dst));
+					struct sr_arpentry *arp_entry = sr_arpcache_lookup(&(sr->cache), ip_hdr->ip_dst);
 					if(arp_entry == NULL)
 					{
 						/* This IP address is not in the cache.
 						 * Send ARP request. */
+
+						/* print_hdr_ip((uint8_t *)ip_hdr); */
 
 						/* First, find proper output interface */
 						struct sr_if *output_if = sr_find_if_by_ip(sr, ip_hdr->ip_dst);
@@ -187,13 +189,12 @@ int sr_handle_ip(struct sr_instance *sr,
 								sizeof(uint8_t) * ETHER_ADDR_LEN);
 						((sr_ethernet_hdr_t *)arp_req_eth)->ether_type =
 							htons(ethertype_arp);
-						print_hdr_eth(arp_req_eth);
 
 						uint8_t *arp_req_arp = malloc(sizeof(sr_arp_hdr_t));
 						((sr_arp_hdr_t *)arp_req_arp)->ar_hrd = htons(arp_hrd_ethernet);
 						((sr_arp_hdr_t *)arp_req_arp)->ar_pro = htons(0x800);
 						((sr_arp_hdr_t *)arp_req_arp)->ar_hln = ETHER_ADDR_LEN;
-						((sr_arp_hdr_t *)arp_req_arp)->ar_pln = ip_hdr->ip_len;
+						((sr_arp_hdr_t *)arp_req_arp)->ar_pln = ip_hdr->ip_hl;
 						((sr_arp_hdr_t *)arp_req_arp)->ar_op = htons(arp_op_request);
 						memcpy(((sr_arp_hdr_t *)arp_req_arp)->ar_sha,
 								output_if->addr,
@@ -205,13 +206,17 @@ int sr_handle_ip(struct sr_instance *sr,
 						((sr_arp_hdr_t *)arp_req_arp)->ar_tip = ip_hdr->ip_dst;
 
 						uint8_t *arp_req_from_sr = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t));
+						unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
 						memcpy(arp_req_from_sr, arp_req_eth, sizeof(sr_ethernet_hdr_t));
 						memcpy(arp_req_from_sr + sizeof(sr_ethernet_hdr_t),
 								arp_req_arp, sizeof(sr_arp_hdr_t));
+						/* Save created ARP request to the ARP cache */
+						sr_arpcache_queuereq(&(sr->cache), ((sr_arp_hdr_t *)arp_req_arp)->ar_tip,
+								arp_req_from_sr, len, output_if->name);
 						free(arp_req_eth);
 						free(arp_req_arp);
-						unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
-						print_hdr_arp((uint8_t *)(arp_req_from_sr + sizeof(sr_ethernet_hdr_t)));
+
+						/* print_hdr_arp((uint8_t *)(arp_req_from_sr + sizeof(sr_ethernet_hdr_t))); */
 						if(sr_send_packet(sr, arp_req_from_sr, len, (const char *)output_if->name) < 0)
 						{
 							fprintf(stderr, "Send fail.\n");
@@ -306,7 +311,7 @@ int sr_handle_arp(struct sr_instance *sr,
 			free(arp_reply_eth);
 			free(arp_reply_arp);
 			unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
-			print_hdr_arp((uint8_t *)(arp_reply + sizeof(sr_ethernet_hdr_t)));
+			/* print_hdr_arp((uint8_t *)(arp_reply + sizeof(sr_ethernet_hdr_t))); */
 			if(sr_send_packet(sr, arp_reply, len, (const char *)cur_if->name) < 0)
 			{
 				fprintf(stderr, "Send fail.\n");
