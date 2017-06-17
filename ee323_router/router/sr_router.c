@@ -119,7 +119,8 @@ int sr_handle_ip(struct sr_instance *sr,
 	sr_ethernet_hdr_t *eth_frame = (sr_ethernet_hdr_t *)packet;
 	sr_ip_hdr_t *ip_hdr = (sr_ip_hdr_t *)(eth_frame + 1);
 	
-	print_hdr_ip((uint8_t *)ip_hdr);
+	/* print_hdr_ip((uint8_t *)ip_hdr); */
+
 	if(cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t)) != 0xffff)
 	{
 		/* Invalid checksum */
@@ -132,6 +133,13 @@ int sr_handle_ip(struct sr_instance *sr,
 		fprintf(stderr, "Not a valid packet: invalid ip datagram length.\n");
 		return -1;
 	}
+
+	if(sr_decrement_checksum(ip_hdr) < 0)
+	{
+		/* Error in decremeting ttl */
+	}
+	
+	/* print_hdr_icmp((uint8_t *)(ip_hdr + 1)); */
 
 	return 0;
 }
@@ -225,4 +233,32 @@ int sr_handle_arp(struct sr_instance *sr,
 	}
 
 	return 0;
+}
+
+int sr_decrement_checksum(sr_ip_hdr_t *ip_hdr)
+{
+	/*
+	printf("IP header before decrementing ttl\n");
+	print_hdr_ip((uint8_t *)ip_hdr);
+	*/
+
+	ip_hdr->ip_ttl -= 1;
+	ip_hdr->ip_sum = 0x0000;
+	uint16_t new_checksum = cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t));
+	ip_hdr->ip_sum = new_checksum;
+
+	/*
+	printf("IP header after decrementing ttl\n");
+	print_hdr_ip((uint8_t *)ip_hdr);
+	*/
+
+	if(cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t)) != 0xffff)
+	{
+		fprintf(stderr, "Error in new checksum value!\n");
+		return -1;
+	}
+	else
+	{
+		return 0;
+	}
 }
