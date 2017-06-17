@@ -139,7 +139,97 @@ int sr_handle_ip(struct sr_instance *sr,
 		/* Error in decremeting ttl */
 	}
 	
-	/* print_hdr_icmp((uint8_t *)(ip_hdr + 1)); */
+	print_hdr_ip((uint8_t *)ip_hdr);
+	switch(ip_hdr->ip_p)
+	{
+		case 1:
+		{
+			/* This IP datagram contains ICMP header. */
+			sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(ip_hdr + 1);
+			print_hdr_icmp((uint8_t *)icmp_hdr);
+			if(icmp_hdr->icmp_type == 8)
+			{
+				/* This is ICMP echo request */
+				/* Check whether target IP is in the router's interface list */
+				struct sr_if *cur_if = sr->if_list;
+				for(; cur_if != NULL; cur_if = cur_if->next)
+				{
+					if(ntohl(ip_hdr->ip_dst) == ntohl(cur_if->ip))
+					{
+						/* This ICMP reqeust is for this router */
+						break;
+					}
+				}
+
+				if(cur_if == NULL)
+				{
+					/* This ICMP echo reqeust should be just forwarded */
+					struct sr_arpentry *arp_entry = sr_arpcache_lookup(&(sr->cache), ntohl(ip_hdr->ip_dst));
+					if(arp_entry == NULL)
+					{
+						/* This IP address is not in the cache.
+						 * Send ARP request. */
+
+						/* First, find proper output interface */
+						struct sr_if *output_if = sr_find_if_by_ip(sr, ip_hdr->ip_dst);
+						uint8_t broadcast_mac[ETHER_ADDR_LEN];
+						int pos = 0;
+						for(; pos < ETHER_ADDR_LEN; pos++)
+						{
+							broadcast_mac[pos] = 0xff;
+						}
+						uint8_t *arp_req_eth = malloc(sizeof(sr_ethernet_hdr_t));
+						memcpy(((sr_ethernet_hdr_t *)arp_req_eth)->ether_dhost,
+								broadcast_mac,
+								sizeof(uint8_t) * ETHER_ADDR_LEN);
+						memcpy(((sr_ethernet_hdr_t *)arp_req_eth)->ether_shost,
+								output_if->addr,
+								sizeof(uint8_t) * ETHER_ADDR_LEN);
+						((sr_ethernet_hdr_t *)arp_req_eth)->ether_type =
+							htons(ethertype_arp);
+						print_hdr_eth(arp_req_eth);
+
+						uint8_t *arp_req_arp = malloc(sizeof(sr_arp_hdr_t));
+						((sr_arp_hdr_t *)arp_req_arp)->ar_hrd = htons(arp_hrd_ethernet);
+						((sr_arp_hdr_t *)arp_req_arp)->ar_pro = htons(0x800);
+						((sr_arp_hdr_t *)arp_req_arp)->ar_hln = ETHER_ADDR_LEN;
+						((sr_arp_hdr_t *)arp_req_arp)->ar_pln = ip_hdr->ip_len;
+						((sr_arp_hdr_t *)arp_req_arp)->ar_op = htons(arp_op_request);
+						memcpy(((sr_arp_hdr_t *)arp_req_arp)->ar_sha,
+								output_if->addr,
+								sizeof(uint8_t) * ETHER_ADDR_LEN);
+						((sr_arp_hdr_t *)arp_req_arp)->ar_sip = output_if->ip;
+						memcpy(((sr_arp_hdr_t *)arp_req_arp)->ar_tha,
+								broadcast_mac,
+								sizeof(uint8_t) * ETHER_ADDR_LEN);
+						((sr_arp_hdr_t *)arp_req_arp)->ar_tip = ip_hdr->ip_dst;
+
+						uint8_t *arp_req_from_sr = malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t));
+						memcpy(arp_req_from_sr, arp_req_eth, sizeof(sr_ethernet_hdr_t));
+						memcpy(arp_req_from_sr + sizeof(sr_ethernet_hdr_t),
+								arp_req_arp, sizeof(sr_arp_hdr_t));
+						free(arp_req_eth);
+						free(arp_req_arp);
+						unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
+						print_hdr_arp((uint8_t *)(arp_req_from_sr + sizeof(sr_ethernet_hdr_t)));
+						if(sr_send_packet(sr, arp_req_from_sr, len, (const char *)output_if->name) < 0)
+						{
+							fprintf(stderr, "Send fail.\n");
+							return -1;
+						}
+					}
+					else
+					{
+						printf("ARP cache HIT!\n");
+					}
+				}
+				else
+				{
+					/* This router should send ICMP echo reply */
+				}
+			}
+		}
+	}
 
 	return 0;
 }
@@ -216,10 +306,12 @@ int sr_handle_arp(struct sr_instance *sr,
 			free(arp_reply_eth);
 			free(arp_reply_arp);
 			unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
-			if(!sr_send_packet(sr, arp_reply, len, (const char *)cur_if->name))
+			print_hdr_arp((uint8_t *)(arp_reply + sizeof(sr_ethernet_hdr_t)));
+			if(sr_send_packet(sr, arp_reply, len, (const char *)cur_if->name) < 0)
 			{
 				fprintf(stderr, "Send fail.\n");
-				return -1;
+				/* return -1; */
+				exit(EXIT_FAILURE);
 			}
 			break;
 		}
@@ -261,4 +353,23 @@ int sr_decrement_checksum(sr_ip_hdr_t *ip_hdr)
 	{
 		return 0;
 	}
+}
+
+struct sr_if *sr_find_if_by_ip(struct sr_instance *sr, uint32_t ip)
+{
+	char *match_node;
+	struct sr_if *match_if;
+	struct sr_rt *cur_rt_node = sr->routing_table;
+
+	for(; cur_rt_node != NULL; cur_rt_node = cur_rt_node->next)
+	{
+		if(ip == cur_rt_node->dest.s_addr)
+		{
+			match_node = strdup(cur_rt_node->interface);
+			break;
+		}
+	}
+	match_if = sr_get_interface(sr, (const char *)match_node);
+
+	return match_if;
 }
