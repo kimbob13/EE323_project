@@ -69,6 +69,7 @@ void sr_init(struct sr_instance* );
 void sr_handlepacket(struct sr_instance* , uint8_t * , unsigned int , char* );
 int sr_handle_ip(struct sr_instance *, uint8_t *, unsigned int, char *);
 int sr_handle_arp(struct sr_instance *, uint8_t *, unsigned int, char *);
+int sr_handle_arpreq(struct sr_instance *, struct sr_arpreq *, sr_ip_hdr_t *, struct sr_if *);
 int sr_decrement_checksum(sr_ip_hdr_t *);
 struct sr_if *sr_find_if_by_ip(struct sr_instance *, uint32_t);
 
