@@ -137,8 +137,11 @@ int sr_handle_ip(struct sr_instance *sr,
 	if(sr_decrement_checksum(ip_hdr) < 0)
 	{
 		/* Error in decremeting ttl */
+		fprintf(stderr, "Error in decrementing ip ttl!\n");
+		return -1;
 	}
 	
+	/* print_hdr_eth(packet); */
 	/* print_hdr_ip((uint8_t *)ip_hdr); */
 	switch(ip_hdr->ip_p)
 	{
@@ -147,9 +150,68 @@ int sr_handle_ip(struct sr_instance *sr,
 			/* This IP datagram contains ICMP header. */
 			sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(ip_hdr + 1);
 			/* print_hdr_icmp((uint8_t *)icmp_hdr); */
-			if(icmp_hdr->icmp_type == 8)
+			if(icmp_hdr->icmp_type == 0)
+			{
+				/* This is ICMP echo reply */
+
+				/* Check whether target IP is in the router's interface list */
+				struct sr_if *cur_if = sr->if_list;
+				for(; cur_if != NULL; cur_if = cur_if->next)
+				{
+					if(ntohl(ip_hdr->ip_dst) == ntohl(cur_if->ip))
+					{
+						/* This ICMP reply is for this router */
+						break;
+					}
+				}
+
+				if(cur_if == NULL)
+				{
+					/* This ICMP echo reply should be just forwarded */
+					struct sr_arpentry *arp_entry = sr_arpcache_lookup(&(sr->cache), ip_hdr->ip_dst);
+					if(arp_entry == NULL)
+					{
+						/* This IP address is not in the cache.
+						 * Send ARP request. */
+
+						/* First, find proper output interface */
+						struct sr_if *output_if = sr_find_if_by_ip(sr, ip_hdr->ip_dst);
+
+						struct sr_arpreq *req = sr_arpcache_queuereq(&(sr->cache), ip_hdr->ip_dst, packet, len, output_if->name);
+						sr_handle_arpreq(sr, req, ip_hdr, output_if);
+					}
+					else
+					{
+						struct sr_if *output_if = sr_find_if_by_ip(sr, arp_entry->ip);
+						memcpy(eth_frame->ether_dhost,
+								arp_entry->mac,
+								sizeof(uint8_t) * ETHER_ADDR_LEN);
+						memcpy(eth_frame->ether_shost,
+								output_if->addr,
+								sizeof(uint8_t) * ETHER_ADDR_LEN);
+						if(sr_send_packet(sr, packet, len, (const char *)output_if->name) < 0)
+						{
+							fprintf(stderr, "Send cached entry fail\n");
+							return -1;
+						}
+					}
+				}
+				else
+				{
+					/* This router should take action for this ICMP reply */
+				}
+			}
+			else if(icmp_hdr->icmp_type == 8)
 			{
 				/* This is ICMP echo request */
+				
+				/* print_hdr_icmp((uint8_t *)icmp_hdr); */
+				/* Check ICMP header checksum */
+				if(cksum((const void *)icmp_hdr, len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
+				{
+					fprintf(stderr, "Error in ICMP header checksum!\n");
+					return -1;
+				}
 				/* Check whether target IP is in the router's interface list */
 				struct sr_if *cur_if = sr->if_list;
 				for(; cur_if != NULL; cur_if = cur_if->next)
@@ -165,6 +227,7 @@ int sr_handle_ip(struct sr_instance *sr,
 				{
 					/* This ICMP echo reqeust should be just forwarded */
 					struct sr_arpentry *arp_entry = sr_arpcache_lookup(&(sr->cache), ip_hdr->ip_dst);
+
 					if(arp_entry == NULL)
 					{
 						/* This IP address is not in the cache.
@@ -174,12 +237,24 @@ int sr_handle_ip(struct sr_instance *sr,
 
 						/* First, find proper output interface */
 						struct sr_if *output_if = sr_find_if_by_ip(sr, ip_hdr->ip_dst);
+
 						struct sr_arpreq *req = sr_arpcache_queuereq(&(sr->cache), ip_hdr->ip_dst, packet, len, output_if->name);
 						sr_handle_arpreq(sr, req, ip_hdr, output_if);
 					}
 					else
 					{
-						printf("ARP cache HIT!\n");
+						struct sr_if *output_if = sr_find_if_by_ip(sr, arp_entry->ip);
+						memcpy(eth_frame->ether_dhost,
+								arp_entry->mac,
+								sizeof(uint8_t) * ETHER_ADDR_LEN);
+						memcpy(eth_frame->ether_shost,
+								output_if->addr,
+								sizeof(uint8_t) * ETHER_ADDR_LEN);
+						if(sr_send_packet(sr, packet, len, (const char *)output_if->name) < 0)
+						{
+							fprintf(stderr, "Send cached entry fail\n");
+							return -1;
+						}
 					}
 				}
 				else
@@ -202,8 +277,8 @@ int sr_handle_arp(struct sr_instance *sr,
 	sr_ethernet_hdr_t *eth_frame = (sr_ethernet_hdr_t *)packet;
 	sr_arp_hdr_t *arp_recv= (sr_arp_hdr_t *)(eth_frame + 1);
 
-	print_hdr_eth((uint8_t *)eth_frame);
-	print_hdr_arp((uint8_t *)arp_recv);
+	/* print_hdr_eth((uint8_t *)eth_frame); */
+	/* print_hdr_arp((uint8_t *)arp_recv); */
 
 	/* Check whether target IP is in the router's interface list */
 	struct sr_if *cur_if = sr->if_list;
@@ -227,7 +302,11 @@ int sr_handle_arp(struct sr_instance *sr,
 	{
 		case 1:
 		{
-			printf("sr_router.c - 230: receive ARP request packet.\n");
+			/*
+			printf("Receive ARP request packet.\n");
+			print_hdr_arp((uint8_t *)arp_recv);
+			*/
+
 			/* This is an ARP request packet.
 			 * We have to send ARP reply packet */
 			uint8_t *arp_send_eth = malloc(sizeof(sr_ethernet_hdr_t));
@@ -266,21 +345,50 @@ int sr_handle_arp(struct sr_instance *sr,
 			free(arp_send_eth);
 			free(arp_send_arp);
 			unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
-			/* print_hdr_arp((uint8_t *)(arp_reply + sizeof(sr_ethernet_hdr_t))); */
+
+			/*
+			printf("\nARP reply packet!\n");
+			print_hdr_arp((uint8_t *)(arp_send + sizeof(sr_ethernet_hdr_t)));
+			*/
+
 			if(sr_send_packet(sr, arp_send, len, (const char *)cur_if->name) < 0)
 			{
-				fprintf(stderr, "Send fail.\n");
-				/* return -1; */
-				exit(EXIT_FAILURE);
+				fprintf(stderr, "ARP reply send fail.\n");
+				return -1;
 			}
 			break;
 		}
 		case 2:
 		{
 			/* This is an ARP reply packet */
-			
-			printf("sr_router.c - 282: receive ARP reply packet.\n");
-			print_hdr_arp((uint8_t *)arp_recv);
+			unsigned char received_mac[ETHER_ADDR_LEN];
+			struct sr_arpreq *req;
+
+			memcpy(received_mac, arp_recv->ar_sha, ETHER_ADDR_LEN);
+			req = sr_arpcache_insert(&(sr->cache), received_mac, arp_recv->ar_sip);
+
+			if(req)
+			{
+				/* Send packet in linked list */
+				struct sr_packet *cur_wait = req->packets;
+				while(cur_wait != NULL)
+				{
+					memcpy(((sr_ethernet_hdr_t *)(cur_wait->buf))->ether_dhost,
+							arp_recv->ar_sha,
+							sizeof(uint8_t) * ETHER_ADDR_LEN);
+					memcpy(((sr_ethernet_hdr_t *)(cur_wait->buf))->ether_shost,
+							arp_recv->ar_tha,
+							sizeof(uint8_t) * ETHER_ADDR_LEN);
+					/* print_hdr_eth(cur_wait->buf); */
+					if(sr_send_packet(sr, cur_wait->buf, cur_wait->len, (const char *)cur_wait->iface) < 0)
+					{
+						fprintf(stderr, "Fail to send queuing packet\n");
+						return -1;
+					}
+					cur_wait = cur_wait->next;
+				}
+				sr_arpreq_destroy(&(sr->cache), req);
+			}
 			break;
 		}
 		default:
@@ -304,7 +412,6 @@ int sr_handle_arpreq(struct sr_instance *sr,
 		{
 			/* This request was sent 5 times.
 			 * Host is unreachable */
-			printf("sr_router.c - 307\n");
 			printf("Host is unreachable\n");
 		}
 		else
@@ -331,7 +438,7 @@ int sr_handle_arpreq(struct sr_instance *sr,
 			((sr_arp_hdr_t *)arp_req_arp)->ar_hrd = htons(arp_hrd_ethernet);
 			((sr_arp_hdr_t *)arp_req_arp)->ar_pro = htons(0x800);
 			((sr_arp_hdr_t *)arp_req_arp)->ar_hln = ETHER_ADDR_LEN;
-			((sr_arp_hdr_t *)arp_req_arp)->ar_pln = ip_hdr->ip_hl;
+			((sr_arp_hdr_t *)arp_req_arp)->ar_pln = 4;
 			((sr_arp_hdr_t *)arp_req_arp)->ar_op = htons(arp_op_request);
 			memcpy(((sr_arp_hdr_t *)arp_req_arp)->ar_sha,
 					output_if->addr,
@@ -342,7 +449,7 @@ int sr_handle_arpreq(struct sr_instance *sr,
 					sizeof(uint8_t) * ETHER_ADDR_LEN);
 			((sr_arp_hdr_t *)arp_req_arp)->ar_tip = ip_hdr->ip_dst;
 
-			unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t) + 2;
+			unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t) + 4;
 			uint8_t *arp_req_from_sr = malloc(len);
 			memcpy(arp_req_from_sr, arp_req_eth, sizeof(sr_ethernet_hdr_t));
 			memcpy(arp_req_from_sr + sizeof(sr_ethernet_hdr_t), arp_req_arp, sizeof(sr_arp_hdr_t));
@@ -350,9 +457,8 @@ int sr_handle_arpreq(struct sr_instance *sr,
 			free(arp_req_eth);
 			free(arp_req_arp);
 
-			printf("sr_router.c - 351\n");
-			print_hdr_eth((uint8_t *)arp_req_from_sr);
-			print_hdr_arp((uint8_t *)(arp_req_from_sr + sizeof(sr_ethernet_hdr_t)));
+			/* print_hdr_eth((uint8_t *)arp_req_from_sr); */
+			/* print_hdr_arp((uint8_t *)(arp_req_from_sr + sizeof(sr_ethernet_hdr_t))); */
 
 			req->sent = curtime;
 			req->times_sent++;
@@ -365,7 +471,7 @@ int sr_handle_arpreq(struct sr_instance *sr,
 	}
 	else
 	{
-		printf("sr_router.c - 365\n");
+		printf("sr_router.c - 388\n");
 		printf("Wait!\n");
 	}
 	
