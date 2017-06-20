@@ -82,7 +82,7 @@ void sr_handlepacket(struct sr_instance* sr,
 	size_t minlength = sizeof(sr_ethernet_hdr_t);
 	if(len < minlength)
 	{
-		fprintf(stderr, "Not a valid packet: invalid length.\n");
+		fprintf(stderr, "Not a valid packet: less than ethernet header length.\n");
 		return;
 	}
 
@@ -154,6 +154,13 @@ int sr_handle_ip(struct sr_instance *sr,
 			{
 				/* This is ICMP echo reply */
 
+				/* Check ICMP header checksum */
+				if(cksum((const void *)icmp_hdr, len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
+				{
+					fprintf(stderr, "Error in ICMP header checksum!\n");
+					return -1;
+				}
+
 				/* Check whether target IP is in the router's interface list */
 				struct sr_if *cur_if = sr->if_list;
 				for(; cur_if != NULL; cur_if = cur_if->next)
@@ -206,6 +213,7 @@ int sr_handle_ip(struct sr_instance *sr,
 				/* This is ICMP echo request */
 				
 				/* print_hdr_icmp((uint8_t *)icmp_hdr); */
+
 				/* Check ICMP header checksum */
 				if(cksum((const void *)icmp_hdr, len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
 				{
@@ -260,6 +268,44 @@ int sr_handle_ip(struct sr_instance *sr,
 				else
 				{
 					/* This router should send ICMP echo reply */
+					uint8_t *temp = malloc(sizeof(uint8_t) * ETHER_ADDR_LEN);
+					memcpy(temp, eth_frame->ether_dhost, sizeof(uint8_t) * ETHER_ADDR_LEN);
+					memcpy(eth_frame->ether_dhost, eth_frame->ether_shost, sizeof(uint8_t) * ETHER_ADDR_LEN);
+					memcpy(eth_frame->ether_shost, temp, sizeof(uint8_t) * ETHER_ADDR_LEN);
+					free(temp);
+
+					uint32_t temp_ip = ip_hdr->ip_dst;
+					ip_hdr->ip_dst = ip_hdr->ip_src;
+					ip_hdr->ip_src = temp_ip;
+					ip_hdr->ip_id += 1;
+					ip_hdr->ip_ttl += 1;
+					ip_hdr->ip_sum = 0;
+					
+					uint16_t ip_cksum = cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t));
+					ip_hdr->ip_sum = ip_cksum;
+					if(cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t)) != 0xffff)
+					{
+						fprintf(stderr, "ICMP echo reply: Invalid IP checksum!\n");
+						return -1;
+					}
+
+					icmp_hdr->icmp_type = 0;
+					icmp_hdr->icmp_sum = 0;
+
+					uint16_t icmp_cksum = cksum((const void *)icmp_hdr, len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t));
+					icmp_hdr->icmp_sum = icmp_cksum;
+					if(cksum((const void *)icmp_hdr, len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
+					{
+						fprintf(stderr, "ICMP echo reply: Invalid ICMP checksum!\n");
+						return -1;	
+					}
+
+					/* print_hdrs(packet, len); */
+					if(sr_send_packet(sr, packet, len, interface) < 0)
+					{
+						fprintf(stderr, "ICMP echo reply send fail!\n");
+						return -1;
+					}
 				}
 			}
 		}
@@ -468,11 +514,6 @@ int sr_handle_arpreq(struct sr_instance *sr,
 				return -1;
 			}
 		}
-	}
-	else
-	{
-		printf("sr_router.c - 388\n");
-		printf("Wait!\n");
 	}
 	
 	return 0;
