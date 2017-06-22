@@ -18,6 +18,15 @@ See the comments in the header file for an idea of what it should look like.
 */
 void sr_arpcache_sweepreqs(struct sr_instance *sr) { 
 	/* Fill this in */
+	struct sr_arpreq *cur_req = sr->cache.requests;
+	struct sr_if *cur_output_if = NULL;
+
+	for(; cur_req != NULL; cur_req = cur_req->next)
+	{
+		cur_output_if = sr_find_if_by_ip(sr, cur_req->ip);
+		sr_handle_arpreq(sr, cur_req, cur_output_if);
+	}
+
 }
 
 /* You should not need to touch the rest of this code. */

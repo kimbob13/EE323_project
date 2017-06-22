@@ -95,6 +95,8 @@ void sr_handlepacket(struct sr_instance* sr,
 		if(result < 0)
 		{
 			/* This ethernet frame doesn't contain valid IP datagram */
+			fprintf(stderr, "Fail to handle IP packet.\n");
+			return;
 		}
 	}
 	else if(eth_type == ethertype_arp)
@@ -103,7 +105,9 @@ void sr_handlepacket(struct sr_instance* sr,
 		int result = sr_handle_arp(sr, packet, len, interface);
 		if(result < 0)
 		{
-			/* This ether net frame doesn't contain valid ARP packet */
+			/* This ethernet frame doesn't contain valid ARP packet */
+			fprintf(stderr, "Fail to handle ARP packet.\n");
+			return;
 		}
 	}
 	/* fill in code here */
@@ -116,11 +120,10 @@ int sr_handle_ip(struct sr_instance *sr,
 		unsigned int len,
 		char *interface)
 {
+	struct sr_if *incoming_if = sr_get_interface(sr, interface);
 	sr_ethernet_hdr_t *eth_frame = (sr_ethernet_hdr_t *)packet;
 	sr_ip_hdr_t *ip_hdr = (sr_ip_hdr_t *)(eth_frame + 1);
 	
-	/* print_hdr_ip((uint8_t *)ip_hdr); */
-
 	if(cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t)) != 0xffff)
 	{
 		/* Invalid checksum */
@@ -141,133 +144,94 @@ int sr_handle_ip(struct sr_instance *sr,
 		return -1;
 	}
 	
-	/* print_hdr_eth(packet); */
-	/* print_hdr_ip((uint8_t *)ip_hdr); */
 	switch(ip_hdr->ip_p)
 	{
 		case 1:
 		{
 			/* This IP datagram contains ICMP header. */
 			sr_icmp_hdr_t *icmp_hdr = (sr_icmp_hdr_t *)(ip_hdr + 1);
-			/* print_hdr_icmp((uint8_t *)icmp_hdr); */
-			if(icmp_hdr->icmp_type == 0)
+
+			/* Check ICMP header checksum */
+			if(cksum((const void *)icmp_hdr, len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
 			{
-				/* This is ICMP echo reply */
+				fprintf(stderr, "Error in ICMP header checksum!\n");
+				return -1;
+			}
 
-				/* Check ICMP header checksum */
-				if(cksum((const void *)icmp_hdr, len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
+			/* Check whether target IP is in the router's interface list */
+			struct sr_if *cur_if = sr->if_list;
+			for(; cur_if != NULL; cur_if = cur_if->next)
+			{
+				if(ntohl(ip_hdr->ip_dst) == ntohl(cur_if->ip))
 				{
-					fprintf(stderr, "Error in ICMP header checksum!\n");
-					return -1;
+					/* This ICMP reply is for this router */
+					break;
 				}
+			}
+			
+			if(cur_if == NULL)
+			{
+				/* This ICMP packet should be just forwarded */
 
-				/* Check whether target IP is in the router's interface list */
-				struct sr_if *cur_if = sr->if_list;
-				for(; cur_if != NULL; cur_if = cur_if->next)
+				/* First, find proper output interface */
+				struct sr_if *output_if = sr_find_if_by_ip(sr, ip_hdr->ip_dst);
+				if(output_if == NULL)
 				{
-					if(ntohl(ip_hdr->ip_dst) == ntohl(cur_if->ip))
-					{
-						/* This ICMP reply is for this router */
-						break;
-					}
-				}
-
-				if(cur_if == NULL)
-				{
-					/* This ICMP echo reply should be just forwarded */
-					struct sr_arpentry *arp_entry = sr_arpcache_lookup(&(sr->cache), ip_hdr->ip_dst);
-					if(arp_entry == NULL)
-					{
-						/* This IP address is not in the cache.
-						 * Send ARP request. */
-
-						/* First, find proper output interface */
-						struct sr_if *output_if = sr_find_if_by_ip(sr, ip_hdr->ip_dst);
-
-						struct sr_arpreq *req = sr_arpcache_queuereq(&(sr->cache), ip_hdr->ip_dst, packet, len, output_if->name);
-						sr_handle_arpreq(sr, req, ip_hdr, output_if);
-					}
+					/* There is no proper route to destination.
+					 * Send ICMP Destination net unreachable(Type 3, Code 0) to the sender. */
+					if(sr_send_icmp_t3c0(sr, packet, len, incoming_if) < 0)
+						return -1;
 					else
-					{
-						struct sr_if *output_if = sr_find_if_by_ip(sr, arp_entry->ip);
-						memcpy(eth_frame->ether_dhost,
-								arp_entry->mac,
-								sizeof(uint8_t) * ETHER_ADDR_LEN);
-						memcpy(eth_frame->ether_shost,
-								output_if->addr,
-								sizeof(uint8_t) * ETHER_ADDR_LEN);
-						if(sr_send_packet(sr, packet, len, (const char *)output_if->name) < 0)
-						{
-							fprintf(stderr, "Send cached entry fail\n");
-							return -1;
-						}
-					}
+						return 0;
+				}
+
+				struct sr_arpentry *arp_entry = sr_arpcache_lookup(&(sr->cache), ip_hdr->ip_dst);
+				if(arp_entry == NULL)
+				{
+					/* This IP address is not in the cache.
+					 * Send ARP request. */
+
+
+					struct sr_arpreq *req = sr_arpcache_queuereq(&(sr->cache), ip_hdr->ip_dst, packet, len, output_if->name);
+					sr_handle_arpreq(sr, req, output_if);
 				}
 				else
 				{
-					/* This router should take action for this ICMP reply */
+					struct sr_if *output_if = sr_find_if_by_ip(sr, arp_entry->ip);
+					memcpy(eth_frame->ether_dhost,
+							arp_entry->mac,
+							sizeof(uint8_t) * ETHER_ADDR_LEN);
+					memcpy(eth_frame->ether_shost,
+							output_if->addr,
+							sizeof(uint8_t) * ETHER_ADDR_LEN);
+					if(sr_send_packet(sr, packet, len, (const char *)output_if->name) < 0)
+					{
+						fprintf(stderr, "Send cached entry fail\n");
+						return -1;
+					}
 				}
+
+				break;
+			}
+
+			if(icmp_hdr->icmp_type == 0)
+			{
+				/* This is ICMP echo reply.
+				 * Nothing to be done for this. */
+
+			}
+			else if(icmp_hdr->icmp_type == 3)
+			{
+				/* This is ICMP Port Unreachable.
+				 * Nothing to be done for this. */
 			}
 			else if(icmp_hdr->icmp_type == 8)
 			{
 				/* This is ICMP echo request */
 				
-				/* print_hdr_icmp((uint8_t *)icmp_hdr); */
-
-				/* Check ICMP header checksum */
-				if(cksum((const void *)icmp_hdr, len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
+				if(cur_if != NULL)
 				{
-					fprintf(stderr, "Error in ICMP header checksum!\n");
-					return -1;
-				}
-				/* Check whether target IP is in the router's interface list */
-				struct sr_if *cur_if = sr->if_list;
-				for(; cur_if != NULL; cur_if = cur_if->next)
-				{
-					if(ntohl(ip_hdr->ip_dst) == ntohl(cur_if->ip))
-					{
-						/* This ICMP reqeust is for this router */
-						break;
-					}
-				}
-
-				if(cur_if == NULL)
-				{
-					/* This ICMP echo reqeust should be just forwarded */
-					struct sr_arpentry *arp_entry = sr_arpcache_lookup(&(sr->cache), ip_hdr->ip_dst);
-
-					if(arp_entry == NULL)
-					{
-						/* This IP address is not in the cache.
-						 * Send ARP request. */
-
-						/* print_hdr_ip((uint8_t *)ip_hdr); */
-
-						/* First, find proper output interface */
-						struct sr_if *output_if = sr_find_if_by_ip(sr, ip_hdr->ip_dst);
-
-						struct sr_arpreq *req = sr_arpcache_queuereq(&(sr->cache), ip_hdr->ip_dst, packet, len, output_if->name);
-						sr_handle_arpreq(sr, req, ip_hdr, output_if);
-					}
-					else
-					{
-						struct sr_if *output_if = sr_find_if_by_ip(sr, arp_entry->ip);
-						memcpy(eth_frame->ether_dhost,
-								arp_entry->mac,
-								sizeof(uint8_t) * ETHER_ADDR_LEN);
-						memcpy(eth_frame->ether_shost,
-								output_if->addr,
-								sizeof(uint8_t) * ETHER_ADDR_LEN);
-						if(sr_send_packet(sr, packet, len, (const char *)output_if->name) < 0)
-						{
-							fprintf(stderr, "Send cached entry fail\n");
-							return -1;
-						}
-					}
-				}
-				else
-				{
-					/* This router should send ICMP echo reply */
+					/* This router should send ICMP echo reply(Type 0)*/
 					uint8_t *temp = malloc(sizeof(uint8_t) * ETHER_ADDR_LEN);
 					memcpy(temp, eth_frame->ether_dhost, sizeof(uint8_t) * ETHER_ADDR_LEN);
 					memcpy(eth_frame->ether_dhost, eth_frame->ether_shost, sizeof(uint8_t) * ETHER_ADDR_LEN);
@@ -300,7 +264,6 @@ int sr_handle_ip(struct sr_instance *sr,
 						return -1;	
 					}
 
-					/* print_hdrs(packet, len); */
 					if(sr_send_packet(sr, packet, len, interface) < 0)
 					{
 						fprintf(stderr, "ICMP echo reply send fail!\n");
@@ -308,7 +271,240 @@ int sr_handle_ip(struct sr_instance *sr,
 					}
 				}
 			}
+			break;
 		}
+		case 6:
+		case 17:
+		{
+			/* This IP datagram contains UDP/TCP segment
+			 * Forward received datagram.
+			 * If packet is destined to this router, send ICMP port unreachable packet */
+
+			/* Check whether target IP is in the router's interface list */
+			struct sr_if *cur_if = sr->if_list;
+			for(; cur_if != NULL; cur_if = cur_if->next)
+			{
+				if(ntohl(ip_hdr->ip_dst) == ntohl(cur_if->ip))
+				{
+					/* This IP datagram is for this router */
+					break;
+				}
+			}
+
+			if(cur_if == NULL)
+			{
+				/* This IP datagram should be just forwarded */
+
+				/* First, find proper output interface */
+				struct sr_if *output_if = sr_find_if_by_ip(sr, ip_hdr->ip_dst);
+				if(output_if == NULL)
+				{
+					/* There is no proper route to destination.
+					 * Send ICMP Destination net unreachable(Type 3, Code 0) to the sender. */
+					if(sr_send_icmp_t3c0(sr, packet, len, incoming_if) < 0)
+						return -1;
+					else
+						return 0;
+				}
+				struct sr_arpentry *arp_entry = sr_arpcache_lookup(&(sr->cache), ip_hdr->ip_dst);
+
+				if(arp_entry == NULL)
+				{
+					/* This IP address is not in the cache.
+					 * Send ARP request. */
+
+
+					struct sr_arpreq *req = sr_arpcache_queuereq(&(sr->cache), ip_hdr->ip_dst, packet, len, output_if->name);
+					sr_handle_arpreq(sr, req, output_if);
+				}
+				else
+				{
+					struct sr_if *output_if = sr_find_if_by_ip(sr, arp_entry->ip);
+					memcpy(eth_frame->ether_dhost,
+							arp_entry->mac,
+							sizeof(uint8_t) * ETHER_ADDR_LEN);
+					memcpy(eth_frame->ether_shost,
+							output_if->addr,
+							sizeof(uint8_t) * ETHER_ADDR_LEN);
+					if(sr_send_packet(sr, packet, len, (const char *)output_if->name) < 0)
+					{
+						fprintf(stderr, "Send cached entry fail\n");
+						return -1;
+					}
+				}
+			}
+			else
+			{
+				/* This TCP/UDP segment is destined to router.
+				 * Send ICMP Port unreachable(Type 3, Code 3) to the sender. */
+
+				uint16_t icmp_t3c3_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t) + 32;
+				sr_ethernet_hdr_t *icmp_t3c3_eth = malloc(sizeof(sr_ethernet_hdr_t));
+				memcpy(icmp_t3c3_eth->ether_dhost, eth_frame->ether_shost,
+						sizeof(uint8_t) * ETHER_ADDR_LEN);
+				memcpy(icmp_t3c3_eth->ether_shost, eth_frame->ether_dhost,
+						sizeof(uint8_t) * ETHER_ADDR_LEN);
+				icmp_t3c3_eth->ether_type = eth_frame->ether_type;
+
+				sr_ip_hdr_t *icmp_t3c3_ip = malloc(sizeof(sr_ip_hdr_t));
+				icmp_t3c3_ip->ip_hl = ip_hdr->ip_hl;
+				icmp_t3c3_ip->ip_v = ip_hdr->ip_v;
+				icmp_t3c3_ip->ip_tos = 192;
+				icmp_t3c3_ip->ip_len = htons(icmp_t3c3_len - sizeof(sr_ethernet_hdr_t));
+				icmp_t3c3_ip->ip_id = ip_hdr->ip_id + 1;
+				icmp_t3c3_ip->ip_off = ip_hdr->ip_off;
+				icmp_t3c3_ip->ip_ttl = 64;
+				icmp_t3c3_ip->ip_p = 1;
+				icmp_t3c3_ip->ip_sum = 0;
+				icmp_t3c3_ip->ip_src = ip_hdr->ip_dst;
+				icmp_t3c3_ip->ip_dst = ip_hdr->ip_src;
+				uint16_t icmp_t3c3_ip_cksum = cksum((const void *)icmp_t3c3_ip, sizeof(sr_ip_hdr_t));
+				icmp_t3c3_ip->ip_sum = icmp_t3c3_ip_cksum;
+				if(cksum((const void *)icmp_t3c3_ip, sizeof(sr_ip_hdr_t)) != 0xffff)
+				{
+					fprintf(stderr, "ICMP Port unreachable: IP checksum error!\n");
+					free(icmp_t3c3_eth);
+					free(icmp_t3c3_ip);
+					return -1;
+				}
+
+				uint8_t *icmp_t3c3 = calloc(1, icmp_t3c3_len);
+				unsigned int icmp_t3c3_pos = 0;
+				memcpy(icmp_t3c3, icmp_t3c3_eth, sizeof(sr_ethernet_hdr_t));
+				icmp_t3c3_pos += sizeof(sr_ethernet_hdr_t);
+				memcpy(icmp_t3c3 + icmp_t3c3_pos, icmp_t3c3_ip, sizeof(sr_ip_hdr_t));
+				icmp_t3c3_pos += sizeof(sr_ip_hdr_t);
+				((sr_icmp_t3_hdr_t *)(icmp_t3c3 + icmp_t3c3_pos))->icmp_type = 3;
+				((sr_icmp_t3_hdr_t *)(icmp_t3c3 + icmp_t3c3_pos))->icmp_code = 3;
+				((sr_icmp_t3_hdr_t *)(icmp_t3c3 + icmp_t3c3_pos))->icmp_sum = 0;
+				((sr_icmp_t3_hdr_t *)(icmp_t3c3 + icmp_t3c3_pos))->unused = 0;
+				((sr_icmp_t3_hdr_t *)(icmp_t3c3 + icmp_t3c3_pos))->next_mtu = 200;
+				memcpy(((sr_icmp_t3_hdr_t *)(icmp_t3c3 + icmp_t3c3_pos))->data,
+						packet + sizeof(sr_ethernet_hdr_t), ICMP_DATA_SIZE);
+				icmp_t3c3_pos += sizeof(sr_icmp_t3_hdr_t);
+				memcpy(icmp_t3c3 + icmp_t3c3_pos,
+						packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + 8,
+						len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t) - 8);
+				icmp_t3c3_pos -= sizeof(sr_icmp_t3_hdr_t);
+
+				uint16_t icmp_t3c3_icmp_cksum = cksum((const void *)(icmp_t3c3 + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)),
+						icmp_t3c3_len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t));
+				((sr_icmp_t3_hdr_t *)(icmp_t3c3 + icmp_t3c3_pos))->icmp_sum = icmp_t3c3_icmp_cksum;
+				if(cksum((const void *)(sr_icmp_t3_hdr_t *)(icmp_t3c3 + icmp_t3c3_pos), icmp_t3c3_len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
+				{
+					fprintf(stderr, "ICMP Port unreachable: ICMP checksum error!\n");
+					free(icmp_t3c3_eth);
+					free(icmp_t3c3_ip);
+					free(icmp_t3c3);
+					return -1;
+				}
+
+				if(sr_send_packet(sr, icmp_t3c3, icmp_t3c3_len, (const char *)incoming_if->name) < 0)
+				{
+					fprintf(stderr, "Sending ICMP Port unreachable packet fail!\n");
+					free(icmp_t3c3_eth);
+					free(icmp_t3c3_ip);
+					free(icmp_t3c3);
+					return -1;
+				}
+
+				free(icmp_t3c3_eth);
+				free(icmp_t3c3_ip);
+				free(icmp_t3c3);
+			}
+
+			if(ip_hdr->ip_ttl == 0)
+			{
+				/* Discards this packet.
+				 * Send ICMP Time exceeded(Type 11, Code 0) to the sender */
+
+				uint16_t icmp_t11_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t)
+					+ 4 + sizeof(sr_ip_hdr_t) + 40;
+
+				sr_ethernet_hdr_t *icmp_t11_eth = malloc(sizeof(sr_ethernet_hdr_t));
+				memcpy(icmp_t11_eth->ether_dhost, eth_frame->ether_shost,
+						sizeof(uint8_t) * ETHER_ADDR_LEN);
+				memcpy(icmp_t11_eth->ether_shost, eth_frame->ether_dhost,
+						sizeof(uint8_t) * ETHER_ADDR_LEN);
+				icmp_t11_eth->ether_type = eth_frame->ether_type;
+
+				sr_ip_hdr_t *icmp_t11_ip = malloc(sizeof(sr_ip_hdr_t));
+				icmp_t11_ip->ip_hl = ip_hdr->ip_hl;
+				icmp_t11_ip->ip_v = ip_hdr->ip_v;
+				icmp_t11_ip->ip_tos = 0;
+				icmp_t11_ip->ip_len = htons(icmp_t11_len - sizeof(sr_ethernet_hdr_t));
+				icmp_t11_ip->ip_id = ip_hdr->ip_id + 1;
+				icmp_t11_ip->ip_off = ip_hdr->ip_off;
+				icmp_t11_ip->ip_ttl = 64;
+				icmp_t11_ip->ip_p = 1;
+				icmp_t11_ip->ip_sum = 0;
+				if(cur_if != NULL)
+				{
+					icmp_t11_ip->ip_src = ip_hdr->ip_dst;
+				}
+				else
+				{
+					icmp_t11_ip->ip_src = incoming_if->ip;
+				}
+				icmp_t11_ip->ip_dst = ip_hdr->ip_src;
+				uint16_t icmp_t11_ip_cksum = cksum((const void *)icmp_t11_ip, sizeof(sr_ip_hdr_t));
+				icmp_t11_ip->ip_sum = icmp_t11_ip_cksum;
+				if(cksum((const void *)icmp_t11_ip, sizeof(sr_ip_hdr_t)) != 0xffff)
+				{
+					fprintf(stderr, "ICMP Time exceeded: IP checksum error!\n");
+					free(icmp_t11_eth);
+					free(icmp_t11_ip);
+					return -1;
+				}
+
+				uint8_t *icmp_t11 = calloc(1, icmp_t11_len);
+				unsigned int icmp_t11_pos = 0;
+				memcpy(icmp_t11, icmp_t11_eth, sizeof(sr_ethernet_hdr_t));
+				icmp_t11_pos += sizeof(sr_ethernet_hdr_t);
+				memcpy(icmp_t11 + icmp_t11_pos, icmp_t11_ip, sizeof(sr_ip_hdr_t));
+				icmp_t11_pos += sizeof(sr_ip_hdr_t);
+				((sr_icmp_hdr_t *)(icmp_t11 + icmp_t11_pos))->icmp_type = 11;
+				((sr_icmp_hdr_t *)(icmp_t11 + icmp_t11_pos))->icmp_code = 0;
+				((sr_icmp_hdr_t *)(icmp_t11 + icmp_t11_pos))->icmp_sum = 0;
+				icmp_t11_pos += sizeof(sr_icmp_hdr_t) + 4;
+				memcpy(icmp_t11 + icmp_t11_pos, ip_hdr, sizeof(sr_ip_hdr_t));
+				icmp_t11_pos += sizeof(sr_ip_hdr_t);
+				memcpy(icmp_t11 + icmp_t11_pos,
+						packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t),
+						len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t));
+
+				icmp_t11_pos -= sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_hdr_t) + 4;
+				uint16_t icmp_t11_icmp_cksum = cksum((const void *)(icmp_t11 + icmp_t11_pos),
+						icmp_t11_len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t));
+				((sr_icmp_hdr_t *)(icmp_t11 + icmp_t11_pos))->icmp_sum = icmp_t11_icmp_cksum;
+				if(cksum((const void *)(icmp_t11 + icmp_t11_pos), icmp_t11_len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
+				{
+					fprintf(stderr, "ICMP Time exceeded: ICMP checksum error!\n");
+					free(icmp_t11_eth);
+					free(icmp_t11_ip);
+					free(icmp_t11);
+					return -1;
+				}
+
+				if(sr_send_packet(sr, icmp_t11, icmp_t11_len, (const char *)incoming_if->name) < 0)
+				{
+					fprintf(stderr, "ICMP Time exceeded: Sending ICMP packet fail!\n");
+					free(icmp_t11_eth);
+					free(icmp_t11_ip);
+					free(icmp_t11);
+					return -1;
+				}
+
+				free(icmp_t11_eth);
+				free(icmp_t11_ip);
+				free(icmp_t11);
+
+				return 0;
+			}
+			break;
+		}
+		default:
+			break;
 	}
 
 	return 0;
@@ -322,9 +518,6 @@ int sr_handle_arp(struct sr_instance *sr,
 {
 	sr_ethernet_hdr_t *eth_frame = (sr_ethernet_hdr_t *)packet;
 	sr_arp_hdr_t *arp_recv= (sr_arp_hdr_t *)(eth_frame + 1);
-
-	/* print_hdr_eth((uint8_t *)eth_frame); */
-	/* print_hdr_arp((uint8_t *)arp_recv); */
 
 	/* Check whether target IP is in the router's interface list */
 	struct sr_if *cur_if = sr->if_list;
@@ -348,13 +541,9 @@ int sr_handle_arp(struct sr_instance *sr,
 	{
 		case 1:
 		{
-			/*
-			printf("Receive ARP request packet.\n");
-			print_hdr_arp((uint8_t *)arp_recv);
-			*/
-
 			/* This is an ARP request packet.
 			 * We have to send ARP reply packet */
+
 			uint8_t *arp_send_eth = malloc(sizeof(sr_ethernet_hdr_t));
 			/* Destination MAC address is requester's MAC address */
 			memcpy(((sr_ethernet_hdr_t *)arp_send_eth)->ether_dhost,
@@ -392,16 +581,13 @@ int sr_handle_arp(struct sr_instance *sr,
 			free(arp_send_arp);
 			unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
 
-			/*
-			printf("\nARP reply packet!\n");
-			print_hdr_arp((uint8_t *)(arp_send + sizeof(sr_ethernet_hdr_t)));
-			*/
-
 			if(sr_send_packet(sr, arp_send, len, (const char *)cur_if->name) < 0)
 			{
 				fprintf(stderr, "ARP reply send fail.\n");
+				free(arp_send);
 				return -1;
 			}
+			free(arp_send);
 			break;
 		}
 		case 2:
@@ -425,7 +611,6 @@ int sr_handle_arp(struct sr_instance *sr,
 					memcpy(((sr_ethernet_hdr_t *)(cur_wait->buf))->ether_shost,
 							arp_recv->ar_tha,
 							sizeof(uint8_t) * ETHER_ADDR_LEN);
-					/* print_hdr_eth(cur_wait->buf); */
 					if(sr_send_packet(sr, cur_wait->buf, cur_wait->len, (const char *)cur_wait->iface) < 0)
 					{
 						fprintf(stderr, "Fail to send queuing packet\n");
@@ -446,19 +631,99 @@ int sr_handle_arp(struct sr_instance *sr,
 
 int sr_handle_arpreq(struct sr_instance *sr,
 		struct sr_arpreq *req,
-		sr_ip_hdr_t *ip_hdr,
 		struct sr_if *output_if)
 {
 	time_t curtime = time(NULL);
 
 	if(difftime(curtime, req->sent) > 1.0)
 	{
-		/* This request doesn't give any reply */
+		/* This request doesn't currently give any reply */
 		if(req->times_sent >= 5)
 		{
 			/* This request was sent 5 times.
-			 * Host is unreachable */
-			printf("Host is unreachable\n");
+			 * Send ICMP host unreachable(Type 3, Code 1) to the sender. */
+
+			struct sr_packet *cur_pack = req->packets;
+			for(; cur_pack != NULL; cur_pack = cur_pack->next)
+			{
+				uint8_t *cur_buf = cur_pack->buf;
+				sr_ip_hdr_t *cur_buf_ip = (sr_ip_hdr_t *)(cur_buf + sizeof(sr_ethernet_hdr_t));
+				struct sr_if *cur_buf_if = sr_find_if_by_ip(sr, cur_buf_ip->ip_src);
+
+				uint16_t icmp_t3c1_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t) + 32;
+				sr_ethernet_hdr_t *icmp_t3c1_eth = malloc(sizeof(sr_ethernet_hdr_t));
+				memcpy(icmp_t3c1_eth->ether_dhost, ((sr_ethernet_hdr_t *)cur_buf)->ether_shost,
+						sizeof(uint8_t) * ETHER_ADDR_LEN);
+				memcpy(icmp_t3c1_eth->ether_shost, ((sr_ethernet_hdr_t *)cur_buf)->ether_dhost,
+						sizeof(uint8_t) * ETHER_ADDR_LEN);
+				icmp_t3c1_eth->ether_type = htons(ethertype_ip);
+
+				sr_ip_hdr_t *icmp_t3c1_ip = malloc(sizeof(sr_ip_hdr_t));
+				icmp_t3c1_ip->ip_hl = cur_buf_ip->ip_hl;
+				icmp_t3c1_ip->ip_v = cur_buf_ip->ip_v;
+				icmp_t3c1_ip->ip_tos = 0;
+				icmp_t3c1_ip->ip_len = icmp_t3c1_len - sizeof(sr_ethernet_hdr_t);
+				icmp_t3c1_ip->ip_id = cur_buf_ip->ip_id + 1;
+				icmp_t3c1_ip->ip_off = cur_buf_ip->ip_off;
+				icmp_t3c1_ip->ip_ttl = 64;
+				icmp_t3c1_ip->ip_p = 1;
+				icmp_t3c1_ip->ip_sum = 0;
+				icmp_t3c1_ip->ip_src = cur_buf_if->ip;
+				icmp_t3c1_ip->ip_dst = cur_buf_ip->ip_src;
+				uint16_t icmp_t3c1_ip_cksum = cksum((const void *)icmp_t3c1_ip, sizeof(sr_ip_hdr_t));
+				icmp_t3c1_ip->ip_sum = icmp_t3c1_ip_cksum;
+				if(cksum((const void *)icmp_t3c1_ip, sizeof(sr_ip_hdr_t)) != 0xffff)
+				{
+					fprintf(stderr, "ICMP Destination host unreachable: IP checksum error!\n");
+					free(icmp_t3c1_eth);
+					free(icmp_t3c1_ip);
+					return -1;
+				}
+
+				uint8_t *icmp_t3c1 = malloc(icmp_t3c1_len);
+				unsigned int icmp_t3c1_pos = 0;
+				memcpy(icmp_t3c1, icmp_t3c1_eth, sizeof(sr_ethernet_hdr_t));
+				icmp_t3c1_pos += sizeof(sr_ethernet_hdr_t);
+				memcpy(icmp_t3c1 + icmp_t3c1_pos, icmp_t3c1_ip, sizeof(sr_ip_hdr_t));
+				icmp_t3c1_pos += sizeof(sr_ip_hdr_t);
+				((sr_icmp_t3_hdr_t *)(icmp_t3c1 + icmp_t3c1_pos))->icmp_type = 3;
+				((sr_icmp_t3_hdr_t *)(icmp_t3c1 + icmp_t3c1_pos))->icmp_code = 1;
+				((sr_icmp_t3_hdr_t *)(icmp_t3c1 + icmp_t3c1_pos))->icmp_sum = 0;
+				((sr_icmp_t3_hdr_t *)(icmp_t3c1 + icmp_t3c1_pos))->unused = 0;
+				((sr_icmp_t3_hdr_t *)(icmp_t3c1 + icmp_t3c1_pos))->next_mtu = 200;
+				memcpy(((sr_icmp_t3_hdr_t *)(icmp_t3c1 + icmp_t3c1_pos))->data,
+						cur_buf + sizeof(sr_ethernet_hdr_t), ICMP_DATA_SIZE);
+				icmp_t3c1_pos += sizeof(sr_icmp_t3_hdr_t);
+				memcpy(icmp_t3c1 + icmp_t3c1_pos,
+						cur_buf + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + 8,
+						cur_pack->len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t) - 8);
+				icmp_t3c1_pos -= sizeof(sr_icmp_t3_hdr_t);
+
+				uint16_t icmp_t3c1_icmp_cksum = cksum((const void *)(icmp_t3c1 + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)),
+						icmp_t3c1_len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t));
+				((sr_icmp_t3_hdr_t *)(icmp_t3c1 + icmp_t3c1_pos))->icmp_sum = icmp_t3c1_icmp_cksum;
+				if(cksum((const void *)(sr_icmp_t3_hdr_t *)(icmp_t3c1 + icmp_t3c1_pos), icmp_t3c1_len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
+				{
+					fprintf(stderr, "ICMP Destination host unreachable: ICMP checksum error!\n");
+					free(icmp_t3c1_eth);
+					free(icmp_t3c1_ip);
+					free(icmp_t3c1);
+					return -1;
+				}
+
+				if(sr_send_packet(sr, icmp_t3c1, icmp_t3c1_len, (const char *)cur_buf_if->name) < 0)
+				{
+					fprintf(stderr, "Sending ICMP Destination host unreachable packet fail!\n");
+					free(icmp_t3c1_eth);
+					free(icmp_t3c1_ip);
+					free(icmp_t3c1);
+					return -1;
+				}
+
+				free(icmp_t3c1_eth);
+				free(icmp_t3c1_ip);
+				free(icmp_t3c1);
+			}
 		}
 		else
 		{
@@ -493,26 +758,26 @@ int sr_handle_arpreq(struct sr_instance *sr,
 			memcpy(((sr_arp_hdr_t *)arp_req_arp)->ar_tha,
 					broadcast_mac_arp,
 					sizeof(uint8_t) * ETHER_ADDR_LEN);
-			((sr_arp_hdr_t *)arp_req_arp)->ar_tip = ip_hdr->ip_dst;
+			((sr_arp_hdr_t *)arp_req_arp)->ar_tip = req->ip;
 
 			unsigned int len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t) + 4;
 			uint8_t *arp_req_from_sr = malloc(len);
 			memcpy(arp_req_from_sr, arp_req_eth, sizeof(sr_ethernet_hdr_t));
 			memcpy(arp_req_from_sr + sizeof(sr_ethernet_hdr_t), arp_req_arp, sizeof(sr_arp_hdr_t));
-			/* Save created ARP request to the ARP cache */
+
 			free(arp_req_eth);
 			free(arp_req_arp);
-
-			/* print_hdr_eth((uint8_t *)arp_req_from_sr); */
-			/* print_hdr_arp((uint8_t *)(arp_req_from_sr + sizeof(sr_ethernet_hdr_t))); */
 
 			req->sent = curtime;
 			req->times_sent++;
 			if(sr_send_packet(sr, arp_req_from_sr, len, (const char *)output_if->name) < 0)
 			{
 				fprintf(stderr, "Send fail - ARP request from sr.\n");
+				free(arp_req_from_sr);
 				return -1;
 			}
+
+			free(arp_req_from_sr);
 		}
 	}
 	
@@ -521,24 +786,14 @@ int sr_handle_arpreq(struct sr_instance *sr,
 
 int sr_decrement_checksum(sr_ip_hdr_t *ip_hdr)
 {
-	/*
-	printf("IP header before decrementing ttl\n");
-	print_hdr_ip((uint8_t *)ip_hdr);
-	*/
-
 	ip_hdr->ip_ttl -= 1;
 	ip_hdr->ip_sum = 0x0000;
 	uint16_t new_checksum = cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t));
 	ip_hdr->ip_sum = new_checksum;
 
-	/*
-	printf("IP header after decrementing ttl\n");
-	print_hdr_ip((uint8_t *)ip_hdr);
-	*/
-
 	if(cksum((const void *)ip_hdr, sizeof(sr_ip_hdr_t)) != 0xffff)
 	{
-		fprintf(stderr, "Error in new checksum value!\n");
+		fprintf(stderr, "Error in new checksum value while decrementing ttl!\n");
 		return -1;
 	}
 	else
@@ -561,7 +816,99 @@ struct sr_if *sr_find_if_by_ip(struct sr_instance *sr, uint32_t ip)
 			break;
 		}
 	}
-	match_if = sr_get_interface(sr, (const char *)match_node);
 
-	return match_if;
+	if(cur_rt_node == NULL)
+	{
+		/* There is no match between given IP and routing table entry */
+		return NULL;
+	}
+	else
+	{
+		match_if = sr_get_interface(sr, (const char *)match_node);
+		return match_if;
+	}
+}
+
+int sr_send_icmp_t3c0(struct sr_instance *sr,
+			uint8_t *packet,
+			unsigned int len,
+			struct sr_if *incoming_if)
+{
+	sr_ethernet_hdr_t *eth_frame = (sr_ethernet_hdr_t *)packet;
+	sr_ip_hdr_t *ip_hdr = (sr_ip_hdr_t *)(eth_frame + 1);
+
+	uint16_t icmp_t3c0_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t) + 32;
+	sr_ethernet_hdr_t *icmp_t3c0_eth = malloc(sizeof(sr_ethernet_hdr_t));
+	memcpy(icmp_t3c0_eth->ether_dhost, eth_frame->ether_shost,
+			sizeof(uint8_t) * ETHER_ADDR_LEN);
+	memcpy(icmp_t3c0_eth->ether_shost, eth_frame->ether_dhost,
+			sizeof(uint8_t) * ETHER_ADDR_LEN);
+	icmp_t3c0_eth->ether_type = eth_frame->ether_type;
+
+	sr_ip_hdr_t *icmp_t3c0_ip = malloc(sizeof(sr_ip_hdr_t));
+	icmp_t3c0_ip->ip_hl = ip_hdr->ip_hl;
+	icmp_t3c0_ip->ip_v = ip_hdr->ip_v;
+	icmp_t3c0_ip->ip_tos = 192;
+	icmp_t3c0_ip->ip_len = htons(icmp_t3c0_len - sizeof(sr_ethernet_hdr_t));
+	icmp_t3c0_ip->ip_id = ip_hdr->ip_id + 1;
+	icmp_t3c0_ip->ip_off = ip_hdr->ip_off;
+	icmp_t3c0_ip->ip_ttl = 64;
+	icmp_t3c0_ip->ip_p = 1;
+	icmp_t3c0_ip->ip_sum = 0;
+	icmp_t3c0_ip->ip_src = ip_hdr->ip_dst;
+	icmp_t3c0_ip->ip_dst = ip_hdr->ip_src;
+	uint16_t icmp_t3c0_ip_cksum = cksum((const void *)icmp_t3c0_ip, sizeof(sr_ip_hdr_t));
+	icmp_t3c0_ip->ip_sum = icmp_t3c0_ip_cksum;
+	if(cksum((const void *)icmp_t3c0_ip, sizeof(sr_ip_hdr_t)) != 0xffff)
+	{
+		fprintf(stderr, "ICMP Destination net unreachable: IP checksum error!\n");
+		free(icmp_t3c0_eth);
+		free(icmp_t3c0_ip);
+		return -1;
+	}
+
+	uint8_t *icmp_t3c0 = calloc(1, icmp_t3c0_len);
+	unsigned int icmp_t3c0_pos = 0;
+	memcpy(icmp_t3c0, icmp_t3c0_eth, sizeof(sr_ethernet_hdr_t));
+	icmp_t3c0_pos += sizeof(sr_ethernet_hdr_t);
+	memcpy(icmp_t3c0 + icmp_t3c0_pos, icmp_t3c0_ip, sizeof(sr_ip_hdr_t));
+	icmp_t3c0_pos += sizeof(sr_ip_hdr_t);
+	((sr_icmp_t3_hdr_t *)(icmp_t3c0 + icmp_t3c0_pos))->icmp_type = 3;
+	((sr_icmp_t3_hdr_t *)(icmp_t3c0 + icmp_t3c0_pos))->icmp_code = 0;
+	((sr_icmp_t3_hdr_t *)(icmp_t3c0 + icmp_t3c0_pos))->icmp_sum = 0;
+	((sr_icmp_t3_hdr_t *)(icmp_t3c0 + icmp_t3c0_pos))->unused = 0;
+	((sr_icmp_t3_hdr_t *)(icmp_t3c0 + icmp_t3c0_pos))->next_mtu = 200;
+	memcpy(((sr_icmp_t3_hdr_t *)(icmp_t3c0 + icmp_t3c0_pos))->data,
+			packet + sizeof(sr_ethernet_hdr_t), ICMP_DATA_SIZE);
+	icmp_t3c0_pos += sizeof(sr_icmp_t3_hdr_t);
+	memcpy(icmp_t3c0 + icmp_t3c0_pos,
+			packet + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + 8,
+			len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t) - 8);
+	icmp_t3c0_pos -= sizeof(sr_icmp_t3_hdr_t);
+
+	uint16_t icmp_t3c0_icmp_cksum = cksum((const void *)(icmp_t3c0 + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t)),
+			icmp_t3c0_len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t));
+	((sr_icmp_t3_hdr_t *)(icmp_t3c0 + icmp_t3c0_pos))->icmp_sum = icmp_t3c0_icmp_cksum;
+	if(cksum((const void *)(sr_icmp_t3_hdr_t *)(icmp_t3c0 + icmp_t3c0_pos), icmp_t3c0_len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t)) != 0xffff)
+	{
+		fprintf(stderr, "ICMP Destination net unreachable: ICMP checksum error!\n");
+		free(icmp_t3c0_eth);
+		free(icmp_t3c0_ip);
+		free(icmp_t3c0);
+		return -1;
+	}
+
+	if(sr_send_packet(sr, icmp_t3c0, icmp_t3c0_len, (const char *)incoming_if->name) < 0)
+	{
+		fprintf(stderr, "Sending ICMP Destination net unreachable packet fail!\n");
+		free(icmp_t3c0_eth);
+		free(icmp_t3c0_ip);
+		free(icmp_t3c0);
+		return -1;
+	}
+
+	free(icmp_t3c0_eth);
+	free(icmp_t3c0_ip);
+	free(icmp_t3c0);
+	return 0;
 }
