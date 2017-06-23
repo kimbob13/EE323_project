@@ -191,7 +191,6 @@ int sr_handle_ip(struct sr_instance *sr,
 					/* This IP address is not in the cache.
 					 * Send ARP request. */
 
-
 					struct sr_arpreq *req = sr_arpcache_queuereq(&(sr->cache), ip_hdr->ip_dst, packet, len, output_if->name);
 					sr_handle_arpreq(sr, req, output_if);
 				}
@@ -837,7 +836,8 @@ int sr_send_icmp_t3c0(struct sr_instance *sr,
 	sr_ethernet_hdr_t *eth_frame = (sr_ethernet_hdr_t *)packet;
 	sr_ip_hdr_t *ip_hdr = (sr_ip_hdr_t *)(eth_frame + 1);
 
-	uint16_t icmp_t3c0_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t) + 32;
+	uint16_t icmp_t3c0_len = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t) +
+		(len - sizeof(sr_ethernet_hdr_t) - sizeof(sr_ip_hdr_t) - 8);
 	sr_ethernet_hdr_t *icmp_t3c0_eth = malloc(sizeof(sr_ethernet_hdr_t));
 	memcpy(icmp_t3c0_eth->ether_dhost, eth_frame->ether_shost,
 			sizeof(uint8_t) * ETHER_ADDR_LEN);
